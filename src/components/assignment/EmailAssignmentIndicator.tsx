@@ -30,8 +30,9 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState<any>(null);
+  const [businessId, setBusinessId] = useState<string | null>(null);
 
-  // Fetch team members
+  // Fetch team members and business ID
   useEffect(() => {
     const fetchTeamMembers = async () => {
       if (!user) return;
@@ -44,6 +45,8 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
           .single();
 
         if (!currentProfile?.business_id) return;
+
+        setBusinessId(currentProfile.business_id);
 
         const { data: members } = await supabase
           .from('user_profiles')
@@ -60,16 +63,29 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
     fetchTeamMembers();
   }, [user]);
 
-  // Set up real-time subscription
+  // Set up real-time subscription for assignment changes
   useEffect(() => {
-    if (!emailId || !user) return;
+    if (!businessId || !user) return;
 
-    const channelName = `assignment_${emailId}`;
+    // Use business-wide channel for assignment updates
+    const channelName = `business_assignments_${businessId}`;
     
-    console.log('Setting up assignment subscription for email:', emailId);
+    console.log('Setting up business-wide assignment subscription:', channelName);
 
     const assignmentChannel = supabase
       .channel(channelName)
+      // Listen for broadcasts from other team members
+      .on('broadcast', { event: 'assignment_update' }, (payload) => {
+        console.log('Assignment broadcast received:', payload);
+        const { emailId: updatedEmailId, assignedTo, updatedBy } = payload.payload;
+        
+        // Only update if this is for our email and not updated by current user
+        if (updatedEmailId === emailId && updatedBy !== user.id) {
+          console.log(`Updating assignment for email ${emailId} to:`, assignedTo);
+          setAssignedUserId(assignedTo);
+        }
+      })
+      // Also listen for direct database changes as fallback
       .on(
         'postgres_changes',
         {
@@ -79,7 +95,7 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
           filter: `id=eq.${emailId}`,
         },
         (payload) => {
-          console.log('Assignment update received:', payload);
+          console.log('Assignment database change received:', payload);
           const updatedEmail = payload.new;
           setAssignedUserId(updatedEmail.assigned_to);
         }
@@ -91,16 +107,19 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
     setChannel(assignmentChannel);
 
     return () => {
-      console.log('Cleaning up assignment subscription for email:', emailId);
+      console.log('Cleaning up assignment subscription:', channelName);
       if (assignmentChannel) {
         supabase.removeChannel(assignmentChannel);
       }
     };
-  }, [emailId, user]);
+  }, [businessId, user, emailId]);
 
   const handleAssign = async (userId: string | null) => {
     try {
       setLoading(true);
+
+      // Update local state immediately for responsive UI
+      setAssignedUserId(userId);
 
       const { error } = await supabase
         .from('emails')
@@ -109,11 +128,29 @@ const EmailAssignmentIndicator: React.FC<EmailAssignmentIndicatorProps> = ({
 
       if (error) throw error;
 
+      // Broadcast the assignment change to all business members
+      if (channel && businessId) {
+        console.log('Broadcasting assignment update:', { emailId, assignedTo: userId });
+        
+        // Use the correct broadcast syntax
+        channel.send({
+          type: 'broadcast',
+          event: 'assignment_update',
+          payload: {
+            emailId: emailId,
+            assignedTo: userId,
+            businessId: businessId,
+            updatedBy: user.id // Track who made the change
+          }
+        });
+      }
+
       setIsOpen(false);
-      // Don't update local state here - let real-time subscription handle it
       
     } catch (err) {
       console.error('Error updating assignment:', err);
+      // Revert local state on error
+      setAssignedUserId(initialAssignedTo || null);
     } finally {
       setLoading(false);
     }

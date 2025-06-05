@@ -22,6 +22,7 @@ interface Email {
   storeColor: string;
   store_id: string;
   thread_id?: string;
+  assigned_to?: string | null;
 }
 
 interface Store {

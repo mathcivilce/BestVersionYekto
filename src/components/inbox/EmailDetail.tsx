@@ -33,6 +33,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [thread, setThread] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
   const navigate = useNavigate();
   const { deleteEmail } = useInbox();
 
@@ -44,6 +45,28 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
     getThreadSubject(thread, threadId || emailId),
     [thread, threadId, emailId]
   );
+
+  // Fetch current user profile
+  useEffect(() => {
+    const fetchCurrentUserProfile = async () => {
+      if (!user?.id) return;
+      
+      try {
+        const { data: profile, error } = await supabase
+          .from('user_profiles')
+          .select('first_name, last_name')
+          .eq('user_id', user.id)
+          .single();
+
+        if (error) throw error;
+        setCurrentUserProfile(profile);
+      } catch (error) {
+        console.error('Error fetching current user profile:', error);
+      }
+    };
+
+    fetchCurrentUserProfile();
+  }, [user?.id]);
 
   useEffect(() => {
     const fetchThread = async () => {
@@ -230,12 +253,16 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
       if (error) throw error;
 
       // Add note to thread
+      const authorName = currentUserProfile
+        ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
+        : 'You';
+
       setThread(prev => [...prev, {
         id: `note-${Date.now()}`,
         content: noteContent,
         type: 'note',
         timestamp: new Date().getTime(),
-        author: user?.user_metadata?.first_name + ' ' + user?.user_metadata?.last_name || 'You',
+        author: authorName,
         created_at: new Date().toISOString(),
         user_id: user?.id
       }]);

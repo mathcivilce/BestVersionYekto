@@ -567,28 +567,49 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.log('InboxContext: Manual email refresh triggered');
       setLoading(true);
       
-      const { data: emailsData, error: emailsError } = await supabase
-        .from('emails')
-        .select('*')
+      // SECURITY FIX: Get user's business_id first
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('business_id')
         .eq('user_id', user.id)
-        .order('date', { ascending: false });
+        .single();
 
-      if (emailsError) {
-        console.error('InboxContext: Error refreshing emails:', emailsError);
-        throw emailsError;
+      if (profileError || !userProfile?.business_id) {
+        console.error('InboxContext: Failed to get user business_id during refresh:', profileError);
+        throw new Error('Unable to load business information. Please contact support.');
       }
 
+      // SECURITY: Get stores filtered by business_id
       const { data: storesData, error: storesError } = await supabase
         .from('stores')
         .select('*')
-        .eq('user_id', user.id);
+        .eq('business_id', userProfile.business_id);
 
       if (storesError) {
         console.error('InboxContext: Error refreshing stores:', storesError);
         throw storesError;
       }
 
-      const emailsWithStore = (emailsData || []).map(email => {
+      // SECURITY: Only get emails for user's business stores
+      const storeIds = (storesData || []).map(store => store.id);
+      
+      let emailsData = [];
+      if (storeIds.length > 0) {
+        const { data: emails, error: emailsError } = await supabase
+          .from('emails')
+          .select('*')
+          .in('store_id', storeIds)
+          .order('date', { ascending: false });
+
+        if (emailsError) {
+          console.error('InboxContext: Error refreshing emails:', emailsError);
+          throw emailsError;
+        }
+        
+        emailsData = emails || [];
+      }
+
+      const emailsWithStore = emailsData.map(email => {
         const store = storesData?.find(s => s.id === email.store_id);
         return {
           ...email,
@@ -653,29 +674,59 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         console.log('InboxContext: Starting data load for user:', user.id);
         
-        // Query all stores - RLS policies will filter by business membership
+        // SECURITY FIX: Get user's business_id first to ensure proper filtering
+        const { data: userProfile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('business_id')
+          .eq('user_id', user.id)
+          .single();
+
+        if (profileError || !userProfile?.business_id) {
+          console.error('InboxContext: Failed to get user business_id:', profileError);
+          throw new Error('Unable to load business information. Please contact support.');
+        }
+
+        console.log('InboxContext: User business_id:', userProfile.business_id);
+
+        // SECURITY: Explicitly filter stores by business_id (not relying only on RLS)
         const { data: storesData, error: storesError } = await supabase
           .from('stores')
-          .select('*');
+          .select('*')
+          .eq('business_id', userProfile.business_id);
 
-        console.log('InboxContext: Stores query result:', { storesData, storesError });
+        console.log('InboxContext: Stores query result:', { storesData, storesError, business_id: userProfile.business_id });
         
         if (storesError) {
           console.error('InboxContext: Stores error:', storesError);
           throw storesError;
         }
 
-        // Query all emails - RLS policies will filter by business membership
-        const { data: emailsData, error: emailsError } = await supabase
-          .from('emails')
-          .select('*')
-          .order('date', { ascending: false });
+        // SECURITY: Only get emails for stores that belong to user's business
+        const storeIds = (storesData || []).map(store => store.id);
+        
+        let emailsData = [];
+        if (storeIds.length > 0) {
+          const { data: emails, error: emailsError } = await supabase
+            .from('emails')
+            .select('*')
+            .in('store_id', storeIds)
+            .order('date', { ascending: false });
 
-        console.log('InboxContext: Emails query result:', { emailsData: emailsData?.length, emailsError });
+          if (emailsError) {
+            console.error('InboxContext: Emails error:', emailsError);
+            throw emailsError;
+          }
+          
+          emailsData = emails || [];
+        }
 
-        if (emailsError) {
-          console.error('InboxContext: Emails error:', emailsError);
-          throw emailsError;
+        console.log('InboxContext: Emails query result:', { emailsData: emailsData?.length, storeIds });
+
+        // SECURITY VALIDATION: Double-check that all stores belong to user's business
+        const invalidStores = (storesData || []).filter(store => store.business_id !== userProfile.business_id);
+        if (invalidStores.length > 0) {
+          console.error('InboxContext: SECURITY VIOLATION - Found stores from different business:', invalidStores);
+          throw new Error('Security violation detected. Please contact support.');
         }
 
         console.log('InboxContext: Setting stores and emails data');
@@ -721,12 +772,30 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           console.log('InboxContext: Received real-time email update:', payload);
           const newEmail = payload.new;
 
-          // Get the current stores to find the correct store info
+          // SECURITY: Get stores for user's business only
+          const { data: userProfile } = await supabase
+            .from('user_profiles')
+            .select('business_id')
+            .eq('user_id', user.id)
+            .single();
+
+          if (!userProfile?.business_id) {
+            console.error('InboxContext: No business_id found for realtime update');
+            return;
+          }
+
           const { data: currentStores } = await supabase
             .from('stores')
-            .select('*');
+            .select('*')
+            .eq('business_id', userProfile.business_id);
 
           const store = currentStores?.find(s => s.id === newEmail.store_id);
+          
+          // SECURITY: Only process emails for stores in user's business
+          if (!store) {
+            console.warn('InboxContext: Received email for store not in user business:', newEmail.store_id);
+            return;
+          }
           
           const emailWithStore = {
             ...newEmail,
@@ -761,12 +830,30 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           console.log('InboxContext: Received email update:', payload);
           const updatedEmail = payload.new;
           
-          // Get the current stores to find the correct store info
+          // SECURITY: Get stores for user's business only
+          const { data: userProfile } = await supabase
+            .from('user_profiles')
+            .select('business_id')
+            .eq('user_id', user.id)
+            .single();
+
+          if (!userProfile?.business_id) {
+            console.error('InboxContext: No business_id found for realtime update');
+            return;
+          }
+
           const { data: currentStores } = await supabase
             .from('stores')
-            .select('*');
+            .select('*')
+            .eq('business_id', userProfile.business_id);
 
           const store = currentStores?.find(s => s.id === updatedEmail.store_id);
+          
+          // SECURITY: Only process emails for stores in user's business
+          if (!store) {
+            console.warn('InboxContext: Received email update for store not in user business:', updatedEmail.store_id);
+            return;
+          }
           
           const emailWithStore = {
             ...updatedEmail,

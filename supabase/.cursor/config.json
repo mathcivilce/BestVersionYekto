@@ -1,0 +1,11 @@
+{
+    "resources": {
+      "my-supabase": {
+        "type": "supabase",
+        "url": "https://vjkofswgtffzyeuiainf.supabase.co",
+        "anonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDgwMDA3MzYsImV4cCI6MjA2MzU3NjczNn0.7SqqkSgvxF5zXz8Bdq1BzdNN0Hv_H9vty2aZsaz_T5s",
+        "serviceKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODAwMDczNiwiZXhwIjoyMDYzNTc2NzM2fQ.z6gMgfKm6aZn0TLdF1vP8khSEW-btrJEBOpLIl7oTVQ"
+      }
+    }
+  }
+  

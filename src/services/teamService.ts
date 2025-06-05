@@ -22,9 +22,13 @@ export class TeamService {
 
   static async getCurrentUserBusiness(): Promise<Business | null> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('business_id')
+        .eq('user_id', user.id)
         .single();
 
       if (!profile?.business_id) return null;
@@ -45,9 +49,13 @@ export class TeamService {
 
   static async updateBusinessName(name: string): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('business_id, role')
+        .eq('user_id', user.id)
         .single();
 
       if (!profile?.business_id) {
@@ -93,9 +101,16 @@ export class TeamService {
         userError 
       });
 
+      if (!currentUser.user) {
+        console.log('TeamService: No authenticated user found');
+        return null;
+      }
+
+      // Query for the current user's profile specifically
       const { data: profile, error } = await supabase
         .from('user_profiles')
         .select('*')
+        .eq('user_id', currentUser.user.id)
         .single();
 
       console.log('TeamService: user_profiles query result:', { 
@@ -106,6 +121,11 @@ export class TeamService {
 
       if (error) {
         console.error('TeamService: Error in user_profiles query:', error);
+        // If no profile found, that's not necessarily an error for new users
+        if (error.code === 'PGRST116') {
+          console.log('TeamService: No profile found for user, returning null');
+          return null;
+        }
         throw error;
       }
       
@@ -197,9 +217,16 @@ export class TeamService {
       console.log('TeamService: getTeamMembersFallback() called');
       
       // Get current user's business_id first
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.log('TeamService: No authenticated user for fallback');
+        return [];
+      }
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('business_id')
+        .eq('user_id', user.id)
         .single();
 
       if (!currentProfile?.business_id) {
@@ -256,7 +283,6 @@ export class TeamService {
       }
 
       // Get current user's email for comparison
-      const { data: { user } } = await supabase.auth.getUser();
       const currentUserEmail = user?.email;
 
       // Build team members with proper emails
@@ -312,9 +338,13 @@ export class TeamService {
 
   static async updateMemberRole(request: UpdateMemberRoleRequest): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('role')
+        .eq('user_id', user.id)
         .single();
 
       if (currentProfile?.role !== 'admin') {
@@ -335,9 +365,13 @@ export class TeamService {
 
   static async removeMember(userId: string): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('role, user_id')
+        .eq('user_id', user.id)
         .single();
 
       if (currentProfile?.role !== 'admin') {
@@ -371,9 +405,13 @@ export class TeamService {
 
   static async inviteTeamMember(request: InviteTeamMemberRequest): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('business_id, role, user_id, first_name, last_name')
+        .eq('user_id', user.id)
         .single();
 
       if (!currentProfile?.business_id) {
@@ -432,9 +470,13 @@ export class TeamService {
 
   static async getPendingInvitations(): Promise<TeamInvitation[]> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return [];
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('business_id')
+        .eq('user_id', user.id)
         .single();
 
       if (!currentProfile?.business_id) return [];
@@ -456,9 +498,13 @@ export class TeamService {
 
   static async cancelInvitation(invitationId: string): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('role')
+        .eq('user_id', user.id)
         .single();
 
       if (currentProfile?.role !== 'admin') {
@@ -479,9 +525,13 @@ export class TeamService {
 
   static async resendInvitation(invitationId: string): Promise<void> {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+
       const { data: currentProfile } = await supabase
         .from('user_profiles')
         .select('role')
+        .eq('user_id', user.id)
         .single();
 
       if (currentProfile?.role !== 'admin') {

@@ -137,13 +137,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       setLoading(true);
       
+      // For invited users, skip email confirmation by not setting emailRedirectTo
+      // The trigger function will auto-confirm their email
+      const signUpOptions: any = {
+        data: metadata || {},
+      };
+      
+      // Only set emailRedirectTo for non-invitation signups (this triggers confirmation email)
+      if (!metadata?.invitation_token) {
+        signUpOptions.emailRedirectTo = `${window.location.origin}/dashboard`;
+      }
+      
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        options: {
-          data: metadata || {},
-          emailRedirectTo: `${window.location.origin}/dashboard`,
-        },
+        options: signUpOptions,
       });
 
       if (error) {
@@ -224,6 +232,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           
         } catch (inviteError) {
           console.error('AuthContext: Error processing invitation:', inviteError);
+          
+          // Handle business conflict scenario
+          if (inviteError.message && inviteError.message.includes('already associated with')) {
+            throw new Error(inviteError.message);
+          }
+          
           // This is critical - if invitation processing fails, the user won't have a profile
           throw new Error(`Account created but invitation processing failed: ${inviteError.message}`);
         }

@@ -511,10 +511,11 @@ export class TeamService {
         throw new Error('Only admins can cancel invitations');
       }
 
+      // Update invitation status to cancelled (proper audit trail)
       const { error } = await supabase
         .from('team_invitations')
         .update({ status: 'cancelled' })
-        .eq('id', invitationId);
+        .eq('id', invitationId)
 
       if (error) throw error;
     } catch (error) {
@@ -530,7 +531,7 @@ export class TeamService {
 
       const { data: currentProfile } = await supabase
         .from('user_profiles')
-        .select('role')
+        .select('business_id, role, user_id, first_name, last_name')
         .eq('user_id', user.id)
         .single();
 
@@ -561,7 +562,7 @@ export class TeamService {
 
       if (error) throw error;
 
-      // TODO: Send new invitation email
+      // Send new invitation email with complete inviter information
       await this.sendInvitationEmail({
         email: invitation.email,
         firstName: invitation.first_name,

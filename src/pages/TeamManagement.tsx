@@ -94,8 +94,19 @@ const TeamManagement: React.FC = () => {
 
   const handleCancelInvitation = async (invitationId: string) => {
     try {
+      // Find the invitation to get recipient details
+      const invitation = pendingInvitations.find(inv => inv.id === invitationId);
+      const recipientName = invitation && invitation.first_name && invitation.last_name 
+        ? `${invitation.first_name} ${invitation.last_name}` 
+        : invitation?.email || 'this user';
+
+      // Safety confirmation dialog
+      if (!window.confirm(`Are you sure you want to cancel the invitation for ${recipientName}?`)) {
+        return; // User cancelled the action
+      }
+
       await TeamService.cancelInvitation(invitationId);
-      toast.success('Invitation cancelled');
+      toast.success(`Invitation cancelled for ${recipientName} successfully`);
       loadTeamData();
     } catch (error: any) {
       toast.error(error.message || 'Failed to cancel invitation');
@@ -104,8 +115,14 @@ const TeamManagement: React.FC = () => {
 
   const handleResendInvitation = async (invitationId: string) => {
     try {
+      // Find the invitation to get recipient details
+      const invitation = pendingInvitations.find(inv => inv.id === invitationId);
+      const recipientName = invitation && invitation.first_name && invitation.last_name 
+        ? `${invitation.first_name} ${invitation.last_name}` 
+        : invitation?.email || 'recipient';
+
       await TeamService.resendInvitation(invitationId);
-      toast.success('Invitation resent');
+      toast.success(`Invitation resent to ${recipientName} successfully`);
     } catch (error: any) {
       toast.error(error.message || 'Failed to resend invitation');
     }

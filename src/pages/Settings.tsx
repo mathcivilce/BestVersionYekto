@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Key, Bell, Loader2, Crown, Shield, Eye, Building2 } from 'lucide-react';
+import { User, Key, Bell, Loader2, Crown, Shield, Eye, Building2, Edit2, Check, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { UserRole } from '../types/team';
 import { TeamService } from '../services/teamService';
@@ -10,6 +10,9 @@ const Settings: React.FC = () => {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [isEditingBusinessName, setIsEditingBusinessName] = useState(false);
+  const [editingBusinessName, setEditingBusinessName] = useState('');
+  const [savingBusinessName, setSavingBusinessName] = useState(false);
   const [profileData, setProfileData] = useState({
     firstName: '',
     lastName: '',
@@ -130,6 +133,43 @@ const Settings: React.FC = () => {
       [name]: value
     }));
   };
+
+  const handleEditBusinessName = () => {
+    setEditingBusinessName(profileData.businessName);
+    setIsEditingBusinessName(true);
+  };
+
+  const handleCancelBusinessNameEdit = () => {
+    setIsEditingBusinessName(false);
+    setEditingBusinessName('');
+  };
+
+  const handleSaveBusinessName = async () => {
+    if (!editingBusinessName.trim()) {
+      toast.error('Business name cannot be empty');
+      return;
+    }
+
+    try {
+      setSavingBusinessName(true);
+      await TeamService.updateBusinessName(editingBusinessName.trim());
+      
+      // Update local state
+      setProfileData(prev => ({
+        ...prev,
+        businessName: editingBusinessName.trim()
+      }));
+      
+      setIsEditingBusinessName(false);
+      setEditingBusinessName('');
+      toast.success('Business name updated successfully');
+    } catch (error) {
+      console.error('Error updating business name:', error);
+      toast.error('Failed to update business name');
+    } finally {
+      setSavingBusinessName(false);
+    }
+  };
   
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
@@ -174,9 +214,65 @@ const Settings: React.FC = () => {
                         <Building2 size={16} className="text-gray-400 mr-2" />
                         <span className="text-sm text-gray-600">Business:</span>
                       </div>
-                      <span className="text-sm font-medium text-gray-900">
-                        {profileData.businessName || 'No business assigned'}
-                      </span>
+                      <div className="flex items-center">
+                        {isEditingBusinessName ? (
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="text"
+                              value={editingBusinessName}
+                              onChange={(e) => setEditingBusinessName(e.target.value)}
+                              className="text-sm font-medium text-gray-900 border border-gray-300 rounded px-2 py-1 min-w-0 w-32 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  handleSaveBusinessName();
+                                } else if (e.key === 'Escape') {
+                                  handleCancelBusinessNameEdit();
+                                }
+                              }}
+                              autoFocus
+                              disabled={savingBusinessName}
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveBusinessName}
+                              disabled={savingBusinessName}
+                              className="p-1 text-green-600 hover:text-green-700 disabled:opacity-50"
+                              title="Save"
+                            >
+                              {savingBusinessName ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Check size={14} />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelBusinessNameEdit}
+                              disabled={savingBusinessName}
+                              className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                              title="Cancel"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center">
+                            <span className="text-sm font-medium text-gray-900">
+                              {profileData.businessName || 'No business assigned'}
+                            </span>
+                            {profileData.role === 'admin' && (
+                              <button
+                                type="button"
+                                onClick={handleEditBusinessName}
+                                className="ml-2 p-1 text-gray-400 hover:text-blue-600 transition-colors"
+                                title={profileData.businessName ? "Edit business name" : "Set business name"}
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center">
@@ -190,7 +286,11 @@ const Settings: React.FC = () => {
                     </div>
                   </div>
                   <p className="text-xs text-gray-500 mt-2">
-                    Role and business information is managed by your team administrator.
+                    {profileData.role === 'admin' ? (
+                      'As an admin, you can edit your business name by clicking the edit icon. Role information is managed by the system.'
+                    ) : (
+                      'Role and business information is managed by your team administrator.'
+                    )}
                   </p>
                 </div>
 

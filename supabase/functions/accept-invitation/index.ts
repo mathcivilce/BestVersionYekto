@@ -119,15 +119,22 @@ Deno.serve(async (req: Request) => {
 
     const businessName = business?.name || 'Unknown Business';
 
-    // Confirm user email automatically since they came through invitation
-    const { error: confirmError } = await supabase.auth.admin.updateUserById(user_id, {
-      email_confirm: true
-    });
+    // Check if email is already confirmed (by database trigger)
+    const { data: userData } = await supabase.auth.admin.getUserById(user_id);
+    
+    if (userData.user && !userData.user.email_confirmed_at) {
+      // Email not confirmed yet, confirm it manually
+      const { error: confirmError } = await supabase.auth.admin.updateUserById(user_id, {
+        email_confirm: true
+      });
 
-    if (confirmError) {
-      console.warn('accept-invitation: Could not confirm email:', confirmError);
+      if (confirmError) {
+        console.warn('accept-invitation: Could not confirm email:', confirmError);
+      } else {
+        console.log('accept-invitation: Email confirmed for user');
+      }
     } else {
-      console.log('accept-invitation: Email confirmed for user');
+      console.log('accept-invitation: Email already confirmed by trigger');
     }
 
     // Create user profile with business information
@@ -147,8 +154,33 @@ Deno.serve(async (req: Request) => {
 
     if (profileError) {
       console.error('accept-invitation: Error creating profile:', profileError);
+      console.error('accept-invitation: Profile data attempted:', {
+        user_id,
+        business_id: invitation.business_id,
+        business_name: businessName,
+        role: invitation.role,
+        invited_by: invitation.invited_by,
+        first_name: invitation.first_name,
+        last_name: invitation.last_name,
+        job_title: invitation.job_title
+      });
+      
+      // More specific error message based on the error type
+      let errorMessage = 'Failed to create user profile';
+      if (profileError.code === '42501') {
+        errorMessage = 'Permission denied when creating user profile. Please contact support.';
+      } else if (profileError.code === '23505') {
+        errorMessage = 'User profile already exists for this account.';
+      } else if (profileError.message) {
+        errorMessage = `Profile creation failed: ${profileError.message}`;
+      }
+      
       return new Response(
-        JSON.stringify({ error: 'Failed to create user profile' }),
+        JSON.stringify({ 
+          error: errorMessage,
+          details: profileError.message,
+          code: profileError.code 
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

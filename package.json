@@ -17,7 +17,6 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@microsoft/microsoft-graph-types": "^2.40.0",
     "@sendgrid/mail": "^8.1.0",
-    "@supabase/supabase-js": "^2.39.7",
     "@testing-library/react": "^14.2.1",
     "@testing-library/user-event": "^14.5.2",
     "caniuse-lite": "^1.0.30001718",
@@ -40,6 +39,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
+    "@supabase/supabase-js": "^2.49.10",
     "@types/dompurify": "^3.0.5",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",

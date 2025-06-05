@@ -10,6 +10,7 @@ import EmailPresenceIndicator from '../presence/EmailPresenceIndicator';
 import { useInbox } from '../../contexts/InboxContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getThreadSubject } from '../../utils/email';
+import EmailAssignmentIndicator from '../assignment/EmailAssignmentIndicator';
 
 interface EmailDetailProps {
   email: any;
@@ -23,8 +24,6 @@ const supabase = createClient(
 
 const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const { user } = useAuth();
-  const [assignedUser, setAssignedUser] = useState<any>(null);
-  const [loadingAssignment, setLoadingAssignment] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [replyMode, setReplyMode] = useState(false);
   const [noteMode, setNoteMode] = useState(false);
@@ -37,139 +36,14 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const navigate = useNavigate();
   const { deleteEmail } = useInbox();
 
-
+  // Memoize stable email properties to prevent unnecessary re-renders
+  const emailId = email.id;
+  const threadId = email.thread_id;
 
   const threadSubject = useMemo(() => 
-    getThreadSubject(thread, email.thread_id || email.id),
-    [thread, email]
+    getThreadSubject(thread, threadId || emailId),
+    [thread, threadId, emailId]
   );
-
-  useEffect(() => {
-    const fetchAssignedUser = async () => {
-      if (!email.assigned_to) return;
-      
-      try {
-        const { data, error } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .eq('user_id', email.assigned_to)
-          .single();
-
-        if (error) throw error;
-        setAssignedUser(data);
-      } catch (err) {
-        console.error('Error fetching assigned user:', err);
-      }
-    };
-
-    fetchAssignedUser();
-  }, [email.assigned_to]);
-
-  const handleAssign = async (userId: string | null) => {
-    try {
-      setLoadingAssignment(true);
-
-      const { error } = await supabase
-        .from('emails')
-        .update({ assigned_to: userId })
-        .eq('id', email.id);
-
-      if (error) throw error;
-
-      if (userId) {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .eq('user_id', userId)
-          .single();
-          
-        setAssignedUser(profile);
-        toast.success('Email assigned successfully');
-      } else {
-        setAssignedUser(null);
-        toast.success('Email unassigned');
-      }
-    } catch (err) {
-      console.error('Error assigning email:', err);
-      toast.error('Failed to assign email');
-    } finally {
-      setLoadingAssignment(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    try {
-      await deleteEmail(email.id);
-      navigate('/inbox');
-    } catch (error) {
-      console.error('Error deleting email:', error);
-    }
-  };
-
-  const handleSubmitReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!replyContent.trim()) {
-      toast.error('Please enter a reply message');
-      return;
-    }
-
-    try {
-      setSending(true);
-
-      // Auto-assign to the replying user if not already assigned
-      if (!email.assigned_to) {
-        await handleAssign(user?.id || null);
-      }
-
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        throw new Error('Not authenticated');
-      }
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-email`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            emailId: email.id,
-            content: replyContent
-          })
-        }
-      );
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to send reply');
-      }
-
-      const { data: reply } = await response.json();
-
-      setThread(prev => [...prev, {
-        ...reply,
-        type: 'reply',
-        timestamp: new Date().getTime()
-      }]);
-
-      toast.success('Reply sent successfully');
-      setReplyContent('');
-      setReplyMode(false);
-    } catch (err) {
-      console.error('Error sending reply:', err);
-      toast.error(err.message || 'Failed to send reply');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleTemplateSelect = (content: string) => {
-    setReplyContent(content);
-    setShowTemplates(false);
-  };
 
   useEffect(() => {
     const fetchThread = async () => {
@@ -177,10 +51,15 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
         setLoading(true);
         
         // Fetch all emails in the thread
+        let threadQuery = `id.eq.${emailId}`;
+        if (threadId) {
+          threadQuery = `thread_id.eq.${threadId},id.eq.${emailId}`;
+        }
+        
         const { data: threadEmails, error: threadError } = await supabase
           .from('emails')
           .select('*')
-          .or(`thread_id.eq.${email.thread_id},id.eq.${email.id}`)
+          .or(threadQuery)
           .order('date', { ascending: true });
 
         if (threadError) throw threadError;
@@ -255,10 +134,79 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
       }
     };
 
-    if (email.id) {
+    if (emailId) {
       fetchThread();
     }
-  }, [email]);
+  }, [emailId, threadId]);
+
+  const handleDelete = async () => {
+    try {
+      await deleteEmail(emailId);
+      navigate('/inbox');
+    } catch (error) {
+      console.error('Error deleting email:', error);
+    }
+  };
+
+  const handleSubmitReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!replyContent.trim()) {
+      toast.error('Please enter a reply message');
+      return;
+    }
+
+    try {
+      setSending(true);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('Not authenticated');
+      }
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-email`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            emailId: emailId,
+            content: replyContent
+          })
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to send reply');
+      }
+
+      const { data: reply } = await response.json();
+
+      setThread(prev => [...prev, {
+        ...reply,
+        type: 'reply',
+        timestamp: new Date().getTime()
+      }]);
+
+      toast.success('Reply sent successfully');
+      setReplyContent('');
+      setReplyMode(false);
+    } catch (err) {
+      console.error('Error sending reply:', err);
+      toast.error(err.message || 'Failed to send reply');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleTemplateSelect = (content: string) => {
+    setReplyContent(content);
+    setShowTemplates(false);
+  };
 
   const handleSubmitNote = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -271,37 +219,25 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
     try {
       setSending(true);
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        throw new Error('Not authenticated');
-      }
-
-      // Get user profile
-      const { data: userProfile } = await supabase
-        .from('user_profiles')
-        .select('first_name, last_name')
-        .eq('user_id', session.user.id)
-        .single();
-
-      const { data: note, error } = await supabase
+      const { error } = await supabase
         .from('internal_notes')
         .insert({
-          email_id: email.id,
-          user_id: session.user.id,
-          content: noteContent,
-        })
-        .select()
-        .single();
+          email_id: emailId,
+          user_id: user?.id,
+          content: noteContent
+        });
 
       if (error) throw error;
 
+      // Add note to thread
       setThread(prev => [...prev, {
-        ...note,
+        id: `note-${Date.now()}`,
+        content: noteContent,
         type: 'note',
         timestamp: new Date().getTime(),
-        author: userProfile
-          ? `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'Unknown User'
-          : 'Unknown User'
+        author: user?.user_metadata?.first_name + ' ' + user?.user_metadata?.last_name || 'You',
+        created_at: new Date().toISOString(),
+        user_id: user?.id
       }]);
 
       toast.success('Note added successfully');
@@ -391,29 +327,11 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
             </button>
             
             <div className="flex items-center space-x-4">
+              <EmailAssignmentIndicator 
+                emailId={emailId} 
+                initialAssignedTo={email.assigned_to}
+              />
               
-              <div className="relative">
-                <button
-                  disabled={loadingAssignment}
-                  onClick={() => handleAssign(user?.id || null)}
-                  className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md ${
-                    assignedUser
-                      ? 'bg-green-100 text-green-800'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {loadingAssignment ? (
-                    <Loader2 size={16} className="animate-spin mr-2" />
-                  ) : (
-                    <User size={16} className="mr-2" />
-                  )}
-                  {assignedUser 
-                    ? `Assigned to ${assignedUser.first_name} ${assignedUser.last_name}`
-                    : 'Unassigned'
-                  }
-                </button>
-              </div>
-
               <div className="flex items-center space-x-2">
                 <button className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full">
                   <Tag size={18} />
@@ -468,7 +386,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
         
         <div className="flex-1 overflow-auto p-4 bg-white">
           {/* Real-time presence indicator */}
-          <EmailPresenceIndicator emailId={email.id} />
+          <EmailPresenceIndicator emailId={emailId} />
           
           {thread.map((message, index) => (
             <div key={message.id} className="mb-6">
@@ -662,8 +580,6 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
           <ChevronLeft size={20} className="rotate-180 transform" />
         )}
       </button>
-
-
     </div>
   );
 }

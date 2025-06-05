@@ -34,6 +34,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [loading, setLoading] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
   const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
+  const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
   const navigate = useNavigate();
   const { deleteEmail, markAsRead } = useInbox();
 
@@ -82,6 +83,107 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
     markEmailAsRead();
   }, [email, emailId, markAsRead]);
+
+  // Helper function to fetch user profile for realtime notes
+  const fetchUserProfile = async (userId: string) => {
+    try {
+      const { data: profile, error } = await supabase
+        .from('user_profiles')
+        .select('first_name, last_name')
+        .eq('user_id', userId)
+        .single();
+
+      if (error) throw error;
+      return profile;
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+      return null;
+    }
+  };
+
+  // Handle incoming realtime notes
+  const handleRealtimeNote = async (payload: any) => {
+    const { new: newNote } = payload;
+    
+    // Don't add if it's from the current user (already added optimistically)
+    if (newNote.user_id === user?.id) {
+      return;
+    }
+
+    // Only add if it's for the current email
+    if (newNote.email_id !== emailId) {
+      return;
+    }
+
+    try {
+      // Fetch the user profile for the note author
+      const userProfile = await fetchUserProfile(newNote.user_id);
+      const authorName = userProfile
+        ? `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'Unknown User'
+        : 'Unknown User';
+
+      // Create the note object to add to thread
+      const noteToAdd = {
+        ...newNote,
+        type: 'note',
+        timestamp: new Date(newNote.created_at).getTime(),
+        author: authorName
+      };
+
+      // Add to thread state
+      setThread(prev => {
+        // Check if note already exists to prevent duplicates
+        const noteExists = prev.some(item => 
+          item.type === 'note' && 
+          item.id === newNote.id
+        );
+        
+        if (noteExists) {
+          return prev;
+        }
+
+        // Add and sort by timestamp
+        return [...prev, noteToAdd].sort((a, b) => a.timestamp - b.timestamp);
+      });
+
+      // Show a subtle notification
+      toast.success(`${authorName} added a note`, {
+        duration: 3000,
+        icon: '📝'
+      });
+    } catch (error) {
+      console.error('Error handling realtime note:', error);
+    }
+  };
+
+  // Set up realtime subscription for internal notes
+  useEffect(() => {
+    if (!emailId || !user?.id) return;
+
+    // Create realtime subscription
+    const subscription = supabase
+      .channel(`internal_notes_${emailId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'internal_notes',
+          filter: `email_id=eq.${emailId}`
+        },
+        handleRealtimeNote
+      )
+      .subscribe();
+
+    setRealtimeSubscription(subscription);
+
+    // Cleanup function
+    return () => {
+      if (subscription) {
+        supabase.removeChannel(subscription);
+      }
+    };
+  }, [emailId, user?.id]);
 
   useEffect(() => {
     const fetchThread = async () => {
@@ -176,6 +278,15 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
       fetchThread();
     }
   }, [emailId, threadId]);
+
+  // Cleanup realtime subscription on unmount
+  useEffect(() => {
+    return () => {
+      if (realtimeSubscription) {
+        supabase.removeChannel(realtimeSubscription);
+      }
+    };
+  }, [realtimeSubscription]);
 
   const handleDelete = async () => {
     try {

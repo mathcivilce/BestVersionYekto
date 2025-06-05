@@ -35,7 +35,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [showTemplates, setShowTemplates] = useState(false);
   const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
   const navigate = useNavigate();
-  const { deleteEmail } = useInbox();
+  const { deleteEmail, markAsRead } = useInbox();
 
   // Memoize stable email properties to prevent unnecessary re-renders
   const emailId = email.id;
@@ -67,6 +67,21 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
     fetchCurrentUserProfile();
   }, [user?.id]);
+
+  // Mark email as read when opening it
+  useEffect(() => {
+    const markEmailAsRead = async () => {
+      if (email && !email.read) {
+        try {
+          await markAsRead(emailId);
+        } catch (error) {
+          console.error('Error marking email as read:', error);
+        }
+      }
+    };
+
+    markEmailAsRead();
+  }, [email, emailId, markAsRead]);
 
   useEffect(() => {
     const fetchThread = async () => {

@@ -44,7 +44,7 @@ interface InboxContextType {
   emails: Email[];
   stores: Store[];
   getEmailById: (id: string) => Email | undefined;
-  markAsRead: (id: string) => void;
+  markAsRead: (id: string) => Promise<void>;
   deleteEmail: (id: string) => Promise<void>;
   statuses: string[];
   connectStore: (storeData: any) => Promise<void>;

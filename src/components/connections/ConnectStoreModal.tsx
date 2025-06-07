@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Mail, Calendar } from 'lucide-react';
+import { X, Mail, Calendar, Settings } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useInbox } from '../../contexts/InboxContext';
 
@@ -9,7 +9,7 @@ interface ConnectStoreModalProps {
 }
 
 const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }) => {
-  const { connectStore, loading } = useInbox();
+  const { connectStore, connectStoreServerOAuth, loading } = useInbox();
   const [storeData, setStoreData] = useState({
     name: '',
     platform: 'outlook',
@@ -17,6 +17,9 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
     syncFrom: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     syncTo: new Date().toISOString().split('T')[0]
   });
+  
+  // State for OAuth method selection (for testing)
+  const [oauthMethod, setOauthMethod] = useState<'msal_popup' | 'server_side'>('msal_popup');
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -26,9 +29,13 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await connectStore(storeData);
+      if (oauthMethod === 'server_side') {
+        await connectStoreServerOAuth(storeData);
+      } else {
+        await connectStore(storeData);
+      }
       onClose();
-      toast.success('Email account connected successfully');
+      toast.success(`Email account connected successfully via ${oauthMethod === 'server_side' ? 'server OAuth' : 'MSAL popup'}`);
     } catch (err: any) {
       console.error('Error connecting email account:', err);
       toast.error(err.message || 'Failed to connect email account');
@@ -74,6 +81,48 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                     className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                     placeholder="My Work Email"
                   />
+                </div>
+
+                {/* OAuth Method Selection - Testing Only */}
+                <div className="border-l-4 border-yellow-400 bg-yellow-50 p-4">
+                  <div className="flex">
+                    <div className="flex-shrink-0">
+                      <Settings className="h-5 w-5 text-yellow-400" />
+                    </div>
+                    <div className="ml-3">
+                      <h3 className="text-sm font-medium text-yellow-800">Testing Mode</h3>
+                      <div className="mt-2 text-sm text-yellow-700">
+                        <p className="mb-3">Choose connection method for testing:</p>
+                        <div className="space-y-2">
+                          <label className="flex items-center">
+                            <input
+                              type="radio"
+                              name="oauthMethod"
+                              value="msal_popup"
+                              checked={oauthMethod === 'msal_popup'}
+                              onChange={(e) => setOauthMethod(e.target.value as 'msal_popup' | 'server_side')}
+                              className="h-4 w-4 text-yellow-600 border-gray-300 focus:ring-yellow-500"
+                            />
+                            <span className="ml-2 font-medium">MSAL Popup (Current Method)</span>
+                          </label>
+                          <p className="ml-6 text-xs text-yellow-600">Uses browser-side token management. No refresh tokens in database.</p>
+                          
+                          <label className="flex items-center">
+                            <input
+                              type="radio"
+                              name="oauthMethod"
+                              value="server_side"
+                              checked={oauthMethod === 'server_side'}
+                              onChange={(e) => setOauthMethod(e.target.value as 'msal_popup' | 'server_side')}
+                              className="h-4 w-4 text-yellow-600 border-gray-300 focus:ring-yellow-500"
+                            />
+                            <span className="ml-2 font-medium">Server-Side OAuth (New Method)</span>
+                          </label>
+                          <p className="ml-6 text-xs text-yellow-600">Stores refresh tokens in database for automatic renewal.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -127,7 +176,12 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                     <div className="ml-3">
                       <h3 className="text-sm font-medium text-blue-800">Microsoft Outlook Integration</h3>
                       <div className="mt-2 text-sm text-blue-700">
-                        <p>You'll be redirected to Microsoft to connect your Outlook account.</p>
+                        <p>
+                          {oauthMethod === 'server_side' 
+                            ? "You'll be redirected to Microsoft OAuth via our secure server-side flow."
+                            : "You'll be redirected to Microsoft via the MSAL popup to connect your Outlook account."
+                          }
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -140,7 +194,7 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                   disabled={loading}
                   className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed sm:ml-3 sm:w-auto sm:text-sm"
                 >
-                  {loading ? 'Connecting...' : 'Connect Account'}
+                  {loading ? 'Connecting...' : `Connect via ${oauthMethod === 'server_side' ? 'Server OAuth' : 'MSAL Popup'}`}
                 </button>
                 <button
                   type="button"

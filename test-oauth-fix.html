@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test OAuth Backend Fix</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        button { padding: 10px 20px; margin: 10px; background: #3b82f6; color: white; border: none; cursor: pointer; }
+        .result { margin: 20px 0; padding: 20px; background: #f3f4f6; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 OAuth Backend Fix Test</h1>
+        <p>This page tests the new <strong>Version 20</strong> oauth-callback function with:</p>
+        <ul>
+            <li>✅ Authorization code deduplication (prevents AADSTS54005)</li>
+            <li>✅ Database schema fix (no sync_from/sync_to/updated_at)</li>
+            <li>✅ HTML + Meta refresh (no ERR_UNSAFE_REDIRECT)</li>
+        </ul>
+        
+        <button onclick="testOAuth()">🚀 Test Server-Side OAuth</button>
+        
+        <div id="result" class="result" style="display: none;">
+            <h3>Test Result:</h3>
+            <div id="resultContent"></div>
+        </div>
+    </div>
+
+    <script>
+        function testOAuth() {
+            // Simulate the OAuth flow
+            const popup = window.open(
+                'https://vjkofswgtffzyeuiainf.supabase.co/functions/v1/oauth-initiate',
+                'oauth-test',
+                'width=500,height=600'
+            );
+            
+            if (!popup) {
+                alert('Popup blocked! Please allow popups for this test.');
+                return;
+            }
+            
+            let processed = false;
+            
+            const checkResult = () => {
+                try {
+                    const url = popup.location.href;
+                    
+                    // Check if redirected to about:blank with hash
+                    if (url.startsWith('about:blank#')) {
+                        const hash = url.split('#')[1];
+                        
+                        if (hash.startsWith('oauth_success=')) {
+                            const data = JSON.parse(decodeURIComponent(hash.replace('oauth_success=', '')));
+                            showResult('✅ SUCCESS', 'OAuth flow completed successfully!', data);
+                            popup.close();
+                            processed = true;
+                            return true;
+                        }
+                        
+                        if (hash.startsWith('oauth_error=')) {
+                            const error = JSON.parse(decodeURIComponent(hash.replace('oauth_error=', '')));
+                            showResult('❌ ERROR', 'OAuth flow failed', error);
+                            popup.close();
+                            processed = true;
+                            return true;
+                        }
+                    }
+                } catch (e) {
+                    // Cross-origin restrictions expected
+                }
+                return false;
+            };
+            
+            // Poll every 300ms
+            const interval = setInterval(() => {
+                if (popup.closed) {
+                    clearInterval(interval);
+                    if (!processed) {
+                        showResult('⚠️ CANCELLED', 'Popup was closed', null);
+                    }
+                } else if (checkResult()) {
+                    clearInterval(interval);
+                }
+            }, 300);
+            
+            // Timeout after 5 minutes
+            setTimeout(() => {
+                if (!popup.closed) popup.close();
+                clearInterval(interval);
+            }, 5 * 60 * 1000);
+        }
+        
+        function showResult(status, message, data) {
+            const resultDiv = document.getElementById('result');
+            const contentDiv = document.getElementById('resultContent');
+            
+            contentDiv.innerHTML = `
+                <h4>${status}</h4>
+                <p><strong>Message:</strong> ${message}</p>
+                ${data ? `<p><strong>Data:</strong> <pre>${JSON.stringify(data, null, 2)}</pre></p>` : ''}
+                <p><em>Test completed at: ${new Date().toLocaleString()}</em></p>
+            `;
+            
+            resultDiv.style.display = 'block';
+        }
+    </script>
+</body>
+</html> 

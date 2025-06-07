@@ -48,7 +48,8 @@ interface InboxContextType {
   deleteEmail: (id: string) => Promise<void>;
   statuses: string[];
   connectStore: (storeData: any) => Promise<void>;
-  disconnectStore: (id: string) => void;
+  connectStoreServerOAuth: (storeData: any) => Promise<void>;
+  disconnectStore: (id: string) => Promise<void>;
   syncEmails: (storeId: string, syncFrom?: string, syncTo?: string) => Promise<void>;
   refreshEmails: () => Promise<void>;
   loading: boolean;
@@ -249,7 +250,12 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         .select()
         .single();
 
-      if (storeError) throw storeError;
+      if (storeError) {
+        if (storeError.code === '23505' && storeError.message.includes('stores_email_business_unique')) {
+          throw new Error(`This email account (${msalResponse.account.username}) is already connected to your business. Please disconnect it first or use a different email account.`);
+        }
+        throw storeError;
+      }
 
       // Create webhook subscription
       const graphClient = Client.init({
@@ -346,6 +352,198 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  const connectStoreServerOAuth = async (storeData: any) => {
+    try {
+      setLoading(true);
+      setPendingStore(storeData);
+
+      // Get user's business_id first
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('user_id', user?.id)
+        .single();
+
+      if (profileError || !userProfile?.business_id) {
+        throw new Error('Business information not found. Please contact support.');
+      }
+
+      console.log('=== STARTING SERVER OAUTH FLOW WITH POLLING ===');
+      console.log('Store data:', storeData);
+      console.log('User ID:', user?.id);
+      console.log('Business ID:', userProfile.business_id);
+
+      // Call oauth-initiate Edge Function
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('No user session found. Please log in again.');
+      }
+
+      const initiateResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/oauth-initiate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          storeData,
+          userId: user?.id,
+          businessId: userProfile.business_id
+        })
+      });
+
+      if (!initiateResponse.ok) {
+        const errorText = await initiateResponse.text();
+        console.error('OAuth initiate failed:', errorText);
+        throw new Error(`Failed to initiate OAuth: ${errorText}`);
+      }
+
+      const initiateData = await initiateResponse.json();
+      console.log('OAuth initiate response:', initiateData);
+      
+      const { authUrl, state } = initiateData;
+      console.log('OAuth URL generated with state:', state);
+      
+      if (!state) {
+        throw new Error('OAuth initiate did not return a state parameter');
+      }
+
+      // Open OAuth popup
+      const popup = window.open(
+        authUrl,
+        'oauth-popup',
+        'width=500,height=600,scrollbars=yes,resizable=yes'
+      );
+
+      if (!popup) {
+        throw new Error('Popup was blocked. Please allow popups for this site.');
+      }
+
+      // NEW POLLING APPROACH - No JavaScript in popup needed
+      toast.loading('Connecting to Microsoft...', { id: 'oauth-process' });
+      
+      const pollForOAuthResult = () => {
+        return new Promise<any>((resolve, reject) => {
+          let pollCount = 0;
+          const maxPolls = 300; // 5 minutes at 1 second intervals
+          
+          const pollInterval = setInterval(async () => {
+            try {
+              pollCount++;
+              
+              // Check if popup was closed by user
+              if (popup.closed) {
+                clearInterval(pollInterval);
+                toast.error('OAuth cancelled by user', { id: 'oauth-process' });
+                reject(new Error('OAuth cancelled by user'));
+                return;
+              }
+
+              // Show progress every 15 seconds
+              if (pollCount % 15 === 0) {
+                toast.loading(`Still connecting... (${Math.floor(pollCount/15) * 15}s)`, { id: 'oauth-process' });
+              }
+              
+              // Debug first few attempts
+              if (pollCount <= 3) {
+                console.log(`Polling attempt ${pollCount} - state is:`, state, typeof state);
+              }
+
+              // Check for timeout
+              if (pollCount >= maxPolls) {
+                clearInterval(pollInterval);
+                popup.close();
+                toast.error('OAuth timeout after 5 minutes', { id: 'oauth-process' });
+                reject(new Error('OAuth timeout after 5 minutes'));
+                return;
+              }
+
+              // Poll the database for results
+              const { data, error } = await supabase
+                .from('oauth_pending')
+                .select('result, completed_at')
+                .eq('state', state)
+                .single();
+
+              if (error && error.code !== 'PGRST116') {
+                console.error('Polling error:', error);
+                return;
+              }
+
+              // Check if OAuth completed
+              if (data?.result) {
+                console.log('=== OAUTH RESULT FOUND IN DATABASE ===');
+                console.log('Result:', data.result);
+                
+                clearInterval(pollInterval);
+                popup.close();
+                
+                // Clean up the pending request
+                await supabase
+                  .from('oauth_pending')
+                  .delete()
+                  .eq('state', state);
+
+                if (data.result.success) {
+                  resolve(data.result);
+                } else {
+                  reject(new Error(data.result.description || 'OAuth failed'));
+                }
+              }
+            } catch (pollError) {
+              console.error('Poll error:', pollError);
+            }
+          }, 1000); // Poll every second
+        });
+      };
+
+      // Wait for OAuth result via polling
+      const result = await pollForOAuthResult();
+      const newStore = result.store;
+
+      console.log('=== OAUTH POLLING SUCCESS ===');
+      console.log('Store data from polling:', newStore);
+
+      // Add the new store to local state
+      const storeWithLastSynced = {
+        ...newStore,
+        lastSynced: newStore.last_synced
+      };
+      
+      setStores(prev => [...prev, storeWithLastSynced]);
+      setPendingStore(null);
+
+      console.log('=== STARTING AUTOMATIC SYNC SETUP (POLLING APPROACH) ===');
+      console.log('Store created with ID:', newStore.id);
+
+      // Trigger initial email sync
+      const performInitialSync = async () => {
+        try {
+          console.log('Performing initial email sync...');
+          await syncEmails(newStore.id, storeData.syncFrom, storeData.syncTo);
+          console.log('Initial sync completed successfully');
+          toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
+          toast.success('Store connected via server OAuth and emails synced successfully');
+        } catch (syncError) {
+          console.error('Initial sync failed:', syncError);
+          const errorMessage = (syncError as any)?.message || 'Unknown error';
+          toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
+          toast.error(`Store connected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`);
+        }
+      };
+
+      performInitialSync();
+    } catch (error: any) {
+      console.error('Error in server OAuth:', error);
+      setPendingStore(null);
+      toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
+      toast.error('Failed to connect store via server OAuth: ' + error.message);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const disconnectStore = async (id: string) => {
     try {
       const store = stores.find(s => s.id === id);
@@ -398,7 +596,23 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         .delete()
         .eq('store_id', id);
 
-      // Delete store and related data
+      // Delete emails associated with this store first (to avoid foreign key constraint)
+      const { error: emailsDeleteError } = await supabase
+        .from('emails')
+        .delete()
+        .eq('store_id', id);
+
+      if (emailsDeleteError) {
+        console.warn('Could not delete emails for store:', emailsDeleteError);
+        // Continue anyway - the emails will be orphaned but that's better than failing
+      }
+
+      // Delete other related data
+      await supabase.from('analytics').delete().eq('store_id', id);
+      await supabase.from('email_replies').delete().eq('store_id', id);
+      await supabase.from('oauth_code_usage').delete().eq('store_id', id);
+
+      // Finally delete the store
       const { error: deleteError } = await supabase
         .from('stores')
         .delete()
@@ -438,12 +652,6 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       console.log('Calling sync-emails function with payload:', { storeId: storeId, syncFrom, syncTo });
       
-      // Try using fetch directly as an alternative to supabase.functions.invoke
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const functionUrl = `${supabaseUrl}/functions/v1/sync-emails`;
-      
-      console.log('Making direct fetch call to:', functionUrl);
-      
       // Create the request payload - include date range if provided
       const requestPayload: any = { storeId: storeId };
       
@@ -462,8 +670,6 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.log('Converted syncTo:', syncTo, '->', toDate.toISOString());
       }
       
-      const requestBody = JSON.stringify(requestPayload);
-      
       console.log('=== DETAILED REQUEST LOGGING ===');
       console.log('storeId variable:', storeId);
       console.log('storeId type:', typeof storeId);
@@ -473,31 +679,33 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.log('Converted syncFrom ISO:', requestPayload.syncFrom);
       console.log('Converted syncTo ISO:', requestPayload.syncTo);
       console.log('Request payload object:', requestPayload);
-      console.log('Request body string:', requestBody);
-      console.log('Request body length:', requestBody.length);
-      console.log('Stringified payload verification:', JSON.parse(requestBody));
+      console.log('Session access token (first 20 chars):', session.access_token.substring(0, 20) + '...');
       console.log('=== END DETAILED REQUEST LOGGING ===');
       
+      // Use direct fetch with proper JWT token
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const functionUrl = `${supabaseUrl}/functions/v1/sync-emails`;
+      
+      console.log('Making direct fetch call to sync-emails...');
       const fetchResponse = await fetch(functionUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
           'Content-Type': 'application/json'
         },
-        body: requestBody
+        body: JSON.stringify(requestPayload)
       });
       
-      console.log('Direct fetch response status:', fetchResponse.status);
-      console.log('Direct fetch response statusText:', fetchResponse.statusText);
-      console.log('Direct fetch response headers:', Object.fromEntries(fetchResponse.headers.entries()));
+      console.log('Sync-emails response status:', fetchResponse.status);
+      console.log('Sync-emails response statusText:', fetchResponse.statusText);
       
       // Get response text before trying to parse as JSON
       const responseText = await fetchResponse.text();
-      console.log('Direct fetch response text:', responseText);
+      console.log('Sync-emails response text:', responseText);
       
       if (!fetchResponse.ok) {
-        console.error('Direct fetch error - Status:', fetchResponse.status);
-        console.error('Direct fetch error - Response:', responseText);
+        console.error('Sync-emails error - Status:', fetchResponse.status);
+        console.error('Sync-emails error - Response:', responseText);
         throw new Error(`HTTP ${fetchResponse.status}: ${responseText}`);
       }
       
@@ -505,11 +713,11 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       let response;
       try {
         response = JSON.parse(responseText);
-        console.log('Direct fetch response data (parsed):', response);
+        console.log('Sync-emails response data (parsed):', response);
       } catch (parseError) {
-        console.error('Failed to parse response as JSON:', parseError);
+        console.error('Failed to parse sync-emails response as JSON:', parseError);
         console.error('Raw response text:', responseText);
-        throw new Error('Invalid JSON response from server');
+        throw new Error('Invalid JSON response from sync-emails function');
       }
 
       if (response?.error) {
@@ -733,7 +941,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const stores = storesData || [];
         setStores(stores);
         
-        const emailsWithStore = (emailsData || []).map(email => {
+        const emailsWithStore: Email[] = (emailsData || []).map(email => {
           const store = stores.find(s => s.id === email.store_id);
           return {
             ...email,
@@ -797,7 +1005,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
           
-          const emailWithStore = {
+          const emailWithStore: Email = {
             ...newEmail,
             storeName: store?.name || '',
             storeColor: store?.color || '#2563eb'
@@ -855,7 +1063,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             return;
           }
           
-          const emailWithStore = {
+          const emailWithStore: Email = {
             ...updatedEmail,
             storeName: store?.name || '',
             storeColor: store?.color || '#2563eb'
@@ -888,6 +1096,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     deleteEmail,
     statuses,
     connectStore,
+    connectStoreServerOAuth,
     disconnectStore,
     syncEmails,
     refreshEmails,

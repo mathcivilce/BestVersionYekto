@@ -154,7 +154,13 @@ serve(async (req: Request) => {
       userEmail = 'unknown@example.com'; // Fallback email
     }
 
-    // Create or update store
+    // Create or update store with standardized platform naming
+    // PLATFORM STANDARDIZATION: Microsoft OAuth = 'outlook' platform
+    // This ensures compatibility with refresh token system and future multi-platform support
+    // Platform naming convention:
+    // - 'outlook' for Microsoft/Office 365 email accounts
+    // - 'gmail' for Google email accounts (future implementation)
+    // - 'imap' for generic IMAP servers (future implementation)
     const { data: store, error: storeError } = await supabase
       .from('stores')
       .upsert({
@@ -162,15 +168,16 @@ serve(async (req: Request) => {
         user_id: pendingRequest.user_id,
         business_id: pendingRequest.business_id,
         name: pendingRequest.store_data.name,
-        platform: 'email', // Set platform to 'email' since this is an email integration
+        platform: 'outlook', // FIXED: Use 'outlook' for Microsoft email accounts (was 'email')
         color: pendingRequest.store_data.color || '#3b82f6',
         email: userEmail,
         sync_from: pendingRequest.store_data.syncFrom,
         sync_to: pendingRequest.store_data.syncTo,
         access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
+        refresh_token: tokens.refresh_token, // Server OAuth stores refresh tokens for automatic renewal
         token_expires_at: new Date(Date.now() + (tokens.expires_in * 1000)).toISOString(),
-        oauth_method: 'server_side',
+        token_last_refreshed: new Date().toISOString(), // Track when token was last refreshed
+        oauth_method: 'server_side', // Distinguishes from 'msal_popup' method
         connected: true,
         status: 'active',
         created_at: new Date().toISOString(),

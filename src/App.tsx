@@ -7,6 +7,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import Layout from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
+import SystemHealth from './pages/SystemHealth';
 import Inbox from './pages/Inbox';
 import Settings from './pages/Settings';
 import EmailDetails from './pages/EmailDetails';
@@ -33,6 +34,7 @@ function App() {
                 <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                   <Route index element={<Navigate to="/dashboard" replace />} />
                   <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="system-health" element={<SystemHealth />} />
                   <Route path="inbox" element={<Inbox />} />
                   <Route path="inbox/:storeId" element={<Inbox />} />
                   <Route path="inbox/email/:emailId" element={<EmailDetails />} />

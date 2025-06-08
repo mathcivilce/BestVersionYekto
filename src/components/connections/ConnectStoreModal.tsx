@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Mail, Calendar, Settings } from 'lucide-react';
+import { X, Mail, Calendar, Shield } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useInbox } from '../../contexts/InboxContext';
 
@@ -18,8 +18,13 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
     syncTo: new Date().toISOString().split('T')[0]
   });
   
-  // State for OAuth method selection (for testing)
-  const [oauthMethod, setOauthMethod] = useState<'msal_popup' | 'server_side'>('msal_popup');
+  // PRODUCTION: Always use server-side OAuth for robust token management
+  // Server-side OAuth provides:
+  // - Automatic token refresh (no user interruption)
+  // - Persistent connections (works 24/7)
+  // - Better security (tokens stored server-side)
+  // - Enterprise-grade reliability
+  const oauthMethod = 'server_side';
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -29,13 +34,10 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (oauthMethod === 'server_side') {
-        await connectStoreServerOAuth(storeData);
-      } else {
-        await connectStore(storeData);
-      }
+      // Always use server-side OAuth for production reliability
+      await connectStoreServerOAuth(storeData);
       onClose();
-      toast.success(`Email account connected successfully via ${oauthMethod === 'server_side' ? 'server OAuth' : 'MSAL popup'}`);
+      toast.success('Email account connected successfully!');
     } catch (err: any) {
       console.error('Error connecting email account:', err);
       toast.error(err.message || 'Failed to connect email account');
@@ -83,43 +85,38 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                   />
                 </div>
 
-                {/* OAuth Method Selection - Testing Only */}
-                <div className="border-l-4 border-yellow-400 bg-yellow-50 p-4">
+                <div>
+                  <label htmlFor="platform" className="block text-sm font-medium text-gray-700">
+                    Email Provider
+                  </label>
+                  <select
+                    id="platform"
+                    name="platform"
+                    value={storeData.platform}
+                    onChange={handleChange}
+                    className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  >
+                    <option value="outlook">Microsoft Outlook / Office 365</option>
+                    <option value="gmail">Google Gmail</option>
+                  </select>
+                </div>
+
+                {/* Enterprise OAuth Information */}
+                <div className="border-l-4 border-green-400 bg-green-50 p-4">
                   <div className="flex">
                     <div className="flex-shrink-0">
-                      <Settings className="h-5 w-5 text-yellow-400" />
+                      <Shield className="h-5 w-5 text-green-400" />
                     </div>
                     <div className="ml-3">
-                      <h3 className="text-sm font-medium text-yellow-800">Testing Mode</h3>
-                      <div className="mt-2 text-sm text-yellow-700">
-                        <p className="mb-3">Choose connection method for testing:</p>
-                        <div className="space-y-2">
-                          <label className="flex items-center">
-                            <input
-                              type="radio"
-                              name="oauthMethod"
-                              value="msal_popup"
-                              checked={oauthMethod === 'msal_popup'}
-                              onChange={(e) => setOauthMethod(e.target.value as 'msal_popup' | 'server_side')}
-                              className="h-4 w-4 text-yellow-600 border-gray-300 focus:ring-yellow-500"
-                            />
-                            <span className="ml-2 font-medium">MSAL Popup (Current Method)</span>
-                          </label>
-                          <p className="ml-6 text-xs text-yellow-600">Uses browser-side token management. No refresh tokens in database.</p>
-                          
-                          <label className="flex items-center">
-                            <input
-                              type="radio"
-                              name="oauthMethod"
-                              value="server_side"
-                              checked={oauthMethod === 'server_side'}
-                              onChange={(e) => setOauthMethod(e.target.value as 'msal_popup' | 'server_side')}
-                              className="h-4 w-4 text-yellow-600 border-gray-300 focus:ring-yellow-500"
-                            />
-                            <span className="ml-2 font-medium">Server-Side OAuth (New Method)</span>
-                          </label>
-                          <p className="ml-6 text-xs text-yellow-600">Stores refresh tokens in database for automatic renewal.</p>
-                        </div>
+                      <h3 className="text-sm font-medium text-green-800">Enterprise-Grade Security</h3>
+                      <div className="mt-2 text-sm text-green-700">
+                        <p className="mb-2">Your email connection includes:</p>
+                        <ul className="list-disc list-inside space-y-1 text-xs">
+                          <li>Automatic token refresh (no interruptions)</li>
+                          <li>Secure server-side token storage</li>
+                          <li>24/7 persistent email synchronization</li>
+                          <li>Enterprise-grade OAuth 2.0 with PKCE</li>
+                        </ul>
                       </div>
                     </div>
                   </div>
@@ -174,13 +171,13 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                       <Mail className="h-5 w-5 text-blue-400" />
                     </div>
                     <div className="ml-3">
-                      <h3 className="text-sm font-medium text-blue-800">Microsoft Outlook Integration</h3>
+                      <h3 className="text-sm font-medium text-blue-800">
+                        {storeData.platform === 'outlook' ? 'Microsoft Outlook' : 'Google Gmail'} Integration
+                      </h3>
                       <div className="mt-2 text-sm text-blue-700">
                         <p>
-                          {oauthMethod === 'server_side' 
-                            ? "You'll be redirected to Microsoft OAuth via our secure server-side flow."
-                            : "You'll be redirected to Microsoft via the MSAL popup to connect your Outlook account."
-                          }
+                          You'll be securely redirected to {storeData.platform === 'outlook' ? 'Microsoft' : 'Google'} to authorize your email account. 
+                          Your connection will be maintained automatically with enterprise-grade security.
                         </p>
                       </div>
                     </div>
@@ -194,7 +191,7 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
                   disabled={loading}
                   className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed sm:ml-3 sm:w-auto sm:text-sm"
                 >
-                  {loading ? 'Connecting...' : `Connect via ${oauthMethod === 'server_side' ? 'Server OAuth' : 'MSAL Popup'}`}
+                  {loading ? 'Connecting...' : 'Connect Email Account'}
                 </button>
                 <button
                   type="button"

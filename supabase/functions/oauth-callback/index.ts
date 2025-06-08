@@ -1,6 +1,31 @@
+/**
+ * OAuth Callback Edge Function
+ * 
+ * This Deno Edge Function handles the OAuth 2.0 callback from Microsoft Azure AD.
+ * It's part of the server-side OAuth flow for connecting user email accounts.
+ * 
+ * Flow Overview:
+ * 1. User initiates OAuth in frontend
+ * 2. Frontend creates pending request with PKCE challenge
+ * 3. User redirected to Microsoft OAuth
+ * 4. Microsoft redirects back to this function with authorization code
+ * 5. Function exchanges code for access/refresh tokens
+ * 6. Function retrieves user info from Microsoft Graph
+ * 7. Function creates/updates store record with tokens
+ * 8. Function stores result for frontend polling
+ * 
+ * Key Features:
+ * - PKCE (Proof Key for Code Exchange) for security
+ * - Token refresh capability for long-term access
+ * - Platform standardization (Microsoft → 'outlook')
+ * - Comprehensive error handling with user-friendly responses
+ * - Database polling pattern (instead of complex redirects)
+ */
+
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// TypeScript interfaces for API responses
 interface TokenResponse {
   access_token: string;
   refresh_token: string;
@@ -17,12 +42,14 @@ interface MicrosoftUserInfo {
 }
 
 serve(async (req: Request) => {
+  // CORS headers for cross-origin requests
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   }
 
+  // Handle preflight CORS requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 200, headers })
   }
@@ -30,20 +57,22 @@ serve(async (req: Request) => {
   try {
     console.log('=== OAUTH CALLBACK FUNCTION START ===');
     
+    // Extract OAuth callback parameters from URL
     const url = new URL(req.url);
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    const error = url.searchParams.get('error');
-    const errorDescription = url.searchParams.get('error_description');
+    const code = url.searchParams.get('code');              // Authorization code from Microsoft
+    const state = url.searchParams.get('state');            // CSRF protection token
+    const error = url.searchParams.get('error');            // OAuth error code
+    const errorDescription = url.searchParams.get('error_description'); // OAuth error details
 
     console.log('OAuth callback received:', { code: !!code, state, error, errorDescription });
 
-    // Initialize Supabase client
+    // Initialize Supabase client with service role key for admin operations
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
+    // Handle OAuth errors from Microsoft
     if (error) {
       console.error('OAuth error:', error, errorDescription);
       const errorData = { success: false, error: 'oauth_error', description: `OAuth error: ${error}` };
@@ -60,6 +89,7 @@ serve(async (req: Request) => {
       });
     }
 
+    // Validate required OAuth parameters
     if (!code || !state) {
       console.error('Missing required parameters:', { code: !!code, state });
       const errorData = { success: false, error: 'invalid_request', description: 'Missing authorization code or state' };
@@ -76,7 +106,8 @@ serve(async (req: Request) => {
       });
     }
 
-    // Get pending OAuth request
+    // Retrieve pending OAuth request using state parameter
+    // The state parameter links this callback to the original OAuth initiation
     const { data: pendingRequest, error: fetchError } = await supabase
       .from('oauth_pending')
       .select('*')
@@ -101,7 +132,8 @@ serve(async (req: Request) => {
 
     console.log('Found pending request:', pendingRequest.id);
 
-    // Exchange code for tokens
+    // Exchange authorization code for access and refresh tokens
+    // This is the core of the OAuth 2.0 Authorization Code flow with PKCE
     const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
       method: 'POST',
       headers: {
@@ -113,7 +145,7 @@ serve(async (req: Request) => {
         code,
         redirect_uri: `${Deno.env.get('SUPABASE_URL')}/functions/v1/oauth-callback`,
         grant_type: 'authorization_code',
-        code_verifier: pendingRequest.code_verifier,
+        code_verifier: pendingRequest.code_verifier, // PKCE code verifier
       }),
     });
 
@@ -137,7 +169,8 @@ serve(async (req: Request) => {
     const tokens = await tokenResponse.json();
     console.log('Token exchange successful');
 
-    // Get user info from Microsoft Graph to retrieve email
+    // Get user information from Microsoft Graph API to retrieve email address
+    // This is necessary because the OAuth token doesn't include the email claim
     const userInfoResponse = await fetch('https://graph.microsoft.com/v1.0/me', {
       headers: {
         'Authorization': `Bearer ${tokens.access_token}`,
@@ -147,6 +180,7 @@ serve(async (req: Request) => {
     let userEmail = '';
     if (userInfoResponse.ok) {
       const userInfo: MicrosoftUserInfo = await userInfoResponse.json();
+      // Try mail field first, fallback to userPrincipalName
       userEmail = userInfo.mail || userInfo.userPrincipalName;
       console.log('Retrieved user email:', userEmail);
     } else {
@@ -210,7 +244,7 @@ serve(async (req: Request) => {
     // WEBHOOK SUBSCRIPTION CREATION TEMPORARILY REMOVED FOR TESTING
     // TODO: Add webhook subscription creation back after OAuth flow is confirmed working
 
-    // Store the result in the database for polling (instead of redirecting)
+    // Prepare success response data for frontend
     const responseData = {
       success: true,
       store: {
@@ -226,6 +260,8 @@ serve(async (req: Request) => {
     };
 
     // Update the pending request with the result (for frontend polling)
+    // Instead of complex redirects, we use a polling pattern where the frontend
+    // checks the database for the OAuth result
     const { error: updateError } = await supabase
       .from('oauth_pending')
       .update({
@@ -240,7 +276,8 @@ serve(async (req: Request) => {
       console.log('✅ OAuth result stored in database for polling');
     }
 
-    // Return a simple success page that can close itself
+    // Return a user-friendly success page that can close itself
+    // This provides immediate feedback to the user while the frontend polls for results
     return new Response(
       `
       <!DOCTYPE html>
@@ -310,7 +347,8 @@ serve(async (req: Request) => {
   } catch (error) {
     console.error('OAuth callback error:', error);
     
-    // Try to store error result in database if we have state
+    // Try to store error result in database if we have state parameter
+    // This ensures the frontend polling can detect the error
     const url = new URL(req.url);
     const state = url.searchParams.get('state');
     
@@ -329,6 +367,7 @@ serve(async (req: Request) => {
         
         const errorData = { success: false, error: 'internal_error', description: error.message || 'An unexpected error occurred' };
         
+        // Store error in pending request for frontend polling
         await supabase
           .from('oauth_pending')
           .update({
@@ -341,6 +380,7 @@ serve(async (req: Request) => {
       }
     }
     
+    // Return user-friendly error page
     return new Response(
       `
       <!DOCTYPE html>

@@ -1,24 +1,77 @@
+/**
+ * Gmail OAuth Callback Edge Function
+ * 
+ * This Deno Edge Function handles the OAuth 2.0 callback from Google for Gmail integration.
+ * It's part of the server-side OAuth flow for connecting user Gmail accounts to the
+ * email management system with enterprise-grade security and token management.
+ * 
+ * OAuth Flow Overview:
+ * 1. User initiates Gmail OAuth in frontend
+ * 2. Frontend creates pending request with PKCE challenge
+ * 3. User redirected to Google OAuth consent screen
+ * 4. Google redirects back to this function with authorization code
+ * 5. Function exchanges code for access/refresh tokens using PKCE
+ * 6. Function retrieves user profile from Google APIs
+ * 7. Function creates store record with Gmail configuration
+ * 8. Function cleans up pending OAuth request
+ * 9. Function displays success page with connection details
+ * 
+ * Google API Integration:
+ * - OAuth 2.0 with PKCE for enhanced security
+ * - Google APIs for user profile information
+ * - Refresh token storage for long-term access
+ * - Automatic token expiration calculation
+ * - Gmail-specific platform configuration
+ * 
+ * Security Features:
+ * - PKCE (Proof Key for Code Exchange) implementation
+ * - State parameter validation with JSON encoding
+ * - Secure token storage with expiration tracking
+ * - Comprehensive error handling and user feedback
+ * - Session cleanup and request validation
+ * 
+ * Platform Standardization:
+ * - Consistent 'gmail' platform naming across system
+ * - Server-side OAuth method for enterprise reliability
+ * - Standardized store structure compatible with refresh system
+ * - Gmail red color branding (#ea4335)
+ * 
+ * Error Handling:
+ * - OAuth error detection and user-friendly display
+ * - Token exchange failure handling with detailed logging
+ * - State validation with comprehensive error messages
+ * - HTML error pages for direct user feedback
+ * 
+ * Used by:
+ * - Gmail account connection flows
+ * - Multi-platform email integration
+ * - Enterprise email management setup
+ * - Google Workspace integrations
+ */
+
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 
+// CORS headers for cross-origin requests from frontend
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// =============================================
-// GMAIL OAUTH CALLBACK HANDLER
-// =============================================
-// Handles the OAuth callback from Google for Gmail integration
-// Exchanges authorization code for access/refresh tokens
-// Stores tokens securely for automated email processing
-
+/**
+ * Gmail OAuth Callback Handler
+ * 
+ * Processes OAuth callbacks from Google for Gmail integration, handling the complete
+ * authorization flow from code exchange to store creation with comprehensive security.
+ */
 serve(async (req) => {
+  // Handle preflight CORS requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
+    // Initialize Supabase client with service role for admin operations
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -30,10 +83,11 @@ serve(async (req) => {
       }
     );
 
+    // Extract OAuth callback parameters from URL
     const url = new URL(req.url);
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    const error = url.searchParams.get('error');
+    const code = url.searchParams.get('code');              // Authorization code from Google
+    const state = url.searchParams.get('state');            // CSRF protection and session data
+    const error = url.searchParams.get('error');            // OAuth error code
 
     console.log('Gmail OAuth callback received:', { 
       hasCode: !!code, 
@@ -42,11 +96,12 @@ serve(async (req) => {
       origin: req.headers.get('origin')
     });
 
-    // Handle OAuth errors
+    // Handle OAuth Errors from Google
     if (error) {
       console.error('Gmail OAuth error:', error);
       const errorDescription = url.searchParams.get('error_description') || 'Unknown error';
       
+      // Return user-friendly HTML error page
       return new Response(
         `
         <!DOCTYPE html>
@@ -76,11 +131,13 @@ serve(async (req) => {
       );
     }
 
+    // Validate Required OAuth Parameters
     if (!code || !state) {
       throw new Error('Missing authorization code or state parameter');
     }
 
-    // Verify and decode state parameter
+    // Verify and Decode State Parameter
+    // State contains encoded JSON with session information for security
     let stateData;
     try {
       stateData = JSON.parse(decodeURIComponent(state));
@@ -95,13 +152,14 @@ serve(async (req) => {
       throw new Error('Invalid state data: missing pendingId or userId');
     }
 
-    // Get pending OAuth request details
+    // Retrieve and Validate Pending OAuth Request
+    // Verify the OAuth session exists and matches expected parameters
     const { data: pendingOAuth, error: pendingError } = await supabase
       .from('oauth_pending')
       .select('*')
       .eq('id', pendingId)
       .eq('user_id', userId)
-      .eq('platform', 'gmail')
+      .eq('platform', 'gmail')            // Ensure platform consistency
       .single();
 
     if (pendingError || !pendingOAuth) {
@@ -115,14 +173,15 @@ serve(async (req) => {
       platform: pendingOAuth.platform
     });
 
-    // Exchange authorization code for tokens
+    // Exchange Authorization Code for Access/Refresh Tokens
+    // Use Google OAuth 2.0 token endpoint with PKCE verification
     const tokenParams = new URLSearchParams({
       client_id: Deno.env.get('GOOGLE_CLIENT_ID') || '',
       client_secret: Deno.env.get('GOOGLE_CLIENT_SECRET') || '',
       code: code,
       grant_type: 'authorization_code',
       redirect_uri: `${Deno.env.get('SUPABASE_URL')}/functions/v1/gmail-oauth-callback`,
-      code_verifier: pendingOAuth.code_verifier // PKCE verification
+      code_verifier: pendingOAuth.code_verifier // PKCE code verifier for security
     });
 
     console.log('Exchanging authorization code for Gmail tokens...');
@@ -135,6 +194,7 @@ serve(async (req) => {
       body: tokenParams.toString()
     });
 
+    // Handle Token Exchange Failures
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.json().catch(() => ({}));
       console.error('Gmail token exchange failed:', {
@@ -153,11 +213,12 @@ serve(async (req) => {
       scope: tokenData.scope
     });
 
-    // Calculate token expiration
+    // Calculate Token Expiration Timestamp
     const expiresAt = new Date();
     expiresAt.setSeconds(expiresAt.getSeconds() + (tokenData.expires_in || 3600));
 
-    // Get user profile information from Google
+    // Retrieve User Profile Information from Google APIs
+    // Get user email address and profile details for store configuration
     const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: {
         'Authorization': `Bearer ${tokenData.access_token}`
@@ -171,34 +232,35 @@ serve(async (req) => {
       console.log('Retrieved Gmail user profile:', { email: userEmail });
     }
 
-    // Create the store record with Gmail-specific configuration
+    // Create Gmail Store Record with Platform-Specific Configuration
     const storeData = {
       user_id: userId,
       name: pendingOAuth.store_name,
-      platform: 'gmail', // Consistent platform naming
-      oauth_method: 'server_side', // Always server-side for production
+      platform: 'gmail',                     // Consistent platform naming for system compatibility
+      oauth_method: 'server_side',            // Enterprise-grade server-side OAuth
       connected: true,
       status: 'active',
       
-      // OAuth token data
+      // OAuth Token Data for API Access
       access_token: tokenData.access_token,
       refresh_token: tokenData.refresh_token,
       token_expires_at: expiresAt.toISOString(),
       token_last_refreshed: new Date().toISOString(),
       
-      // Gmail-specific configuration
+      // Gmail-Specific Configuration
       email_address: userEmail,
-      sync_from: pendingOAuth.sync_from,
-      sync_to: pendingOAuth.sync_to,
-      color: pendingOAuth.color || '#ea4335', // Gmail red
+      sync_from: pendingOAuth.sync_from,      // Email sync start date
+      sync_to: pendingOAuth.sync_to,          // Email sync end date  
+      color: pendingOAuth.color || '#ea4335', // Gmail red branding
       
-      // Tracking fields
+      // Tracking and Audit Fields
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
 
     console.log('Creating Gmail store record...');
 
+    // Insert Store Record into Database
     const { data: newStore, error: storeError } = await supabase
       .from('stores')
       .insert(storeData)
@@ -217,7 +279,8 @@ serve(async (req) => {
       platform: newStore.platform
     });
 
-    // Clean up pending OAuth request
+    // Clean Up Pending OAuth Request
+    // Remove pending request to prevent replay attacks and maintain security
     await supabase
       .from('oauth_pending')
       .delete()
@@ -225,7 +288,8 @@ serve(async (req) => {
 
     console.log('Cleaned up pending OAuth request');
 
-    // Return success page
+    // Return Success Page with Connection Details
+    // Provide comprehensive feedback to user about successful Gmail connection
     return new Response(
       `
       <!DOCTYPE html>
@@ -313,7 +377,7 @@ serve(async (req) => {
         </button>
         
         <script>
-          // Auto-close after 10 seconds
+          // Auto-close after 10 seconds for better UX
           setTimeout(() => {
             window.close();
           }, 10000);
@@ -329,6 +393,7 @@ serve(async (req) => {
   } catch (error) {
     console.error('Gmail OAuth callback error:', error);
     
+    // Return comprehensive error page for debugging and user feedback
     return new Response(
       `
       <!DOCTYPE html>

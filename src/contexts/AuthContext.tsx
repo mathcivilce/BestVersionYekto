@@ -1,11 +1,31 @@
+/**
+ * Authentication Context Provider
+ * 
+ * This context manages user authentication throughout the application using Supabase Auth.
+ * It provides functionality for:
+ * - User login/logout
+ * - User registration  
+ * - Invitation-based signup with team integration
+ * - Session management with automatic refresh
+ * - Environment validation for Supabase configuration
+ * 
+ * The auth system supports both regular user registration and invitation-based
+ * signup where users can join existing businesses through invitation tokens.
+ */
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 
+// Get Supabase configuration from environment variables
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-// Validate Supabase URL format
+/**
+ * Validate if a string is a properly formatted URL
+ * @param urlString - URL string to validate
+ * @returns boolean indicating if URL is valid
+ */
 const isValidUrl = (urlString: string) => {
   try {
     new URL(urlString);
@@ -15,6 +35,7 @@ const isValidUrl = (urlString: string) => {
   }
 };
 
+// Validate Supabase configuration on startup
 if (!supabaseUrl || !isValidUrl(supabaseUrl)) {
   throw new Error('Invalid or missing VITE_SUPABASE_URL. Please check your .env file and ensure the URL is in the correct format (e.g., https://your-project.supabase.co)');
 }
@@ -23,6 +44,15 @@ if (!supabaseAnonKey) {
   throw new Error('Missing VITE_SUPABASE_ANON_KEY. Please check your .env file');
 }
 
+/**
+ * Initialize Supabase client with authentication configuration
+ * 
+ * Auth configuration:
+ * - autoRefreshToken: Automatically refresh expired tokens
+ * - persistSession: Keep user logged in across browser sessions
+ * - detectSessionInUrl: Handle auth redirects from email links
+ * - flowType: Use PKCE flow for enhanced security
+ */
 const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
@@ -33,6 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   }
 });
 
+// User data structure
 interface User {
   id: string;
   email: string;
@@ -40,6 +71,7 @@ interface User {
   lastName?: string;
 }
 
+// Authentication context interface
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string) => Promise<void>;
@@ -49,8 +81,13 @@ interface AuthContextType {
   loading: boolean;
 }
 
+// Create authentication context
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/**
+ * Custom hook to access authentication context
+ * Throws error if used outside of AuthProvider
+ */
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
@@ -59,12 +96,18 @@ export const useAuth = () => {
   return context;
 };
 
+/**
+ * Authentication Provider Component
+ * 
+ * Provides authentication state and methods to all child components.
+ * Handles session persistence and automatic auth state changes.
+ */
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check active sessions and sets the user
+    // Check for existing session on app startup
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser({
@@ -75,7 +118,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
-    // Listen for changes on auth state
+    // Listen for authentication state changes
+    // This handles login, logout, token refresh, etc.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         setUser({
@@ -88,9 +132,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
+    // Cleanup subscription on unmount
     return () => subscription.unsubscribe();
   }, []);
 
+  /**
+   * Log in user with email and password
+   * 
+   * @param email - User's email address
+   * @param password - User's password
+   * @throws Error if login fails
+   */
   const login = async (email: string, password: string) => {
     try {
       setLoading(true);
@@ -108,6 +160,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  /**
+   * Register new user with email confirmation
+   * 
+   * @param email - User's email address
+   * @param password - User's password
+   * @param firstName - User's first name
+   * @param lastName - User's last name
+   * @throws Error if registration fails
+   */
   const register = async (email: string, password: string, firstName: string, lastName: string) => {
     try {
       setLoading(true);
@@ -119,6 +180,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             firstName,
             lastName,
           },
+          // Redirect to login page after email confirmation
           emailRedirectTo: `${window.location.origin}/login`,
         },
       });
@@ -133,6 +195,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  /**
+   * Sign up user (supports both regular and invitation-based registration)
+   * 
+   * @param email - User's email address
+   * @param password - User's password
+   * @param metadata - Additional user data (including invitation token)
+   * @returns Object with error if signup fails
+   * 
+   * For invitation-based signup:
+   * - Skips email confirmation (auto-confirmed by trigger)
+   * - Processes invitation token to join existing business
+   * - Handles session establishment for immediate login
+   */
   const signUp = async (email: string, password: string, metadata?: any) => {
     try {
       setLoading(true);
@@ -164,6 +239,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.log('AuthContext: Processing invitation acceptance for user:', data.user.id);
           
           // Poll for session availability with retries
+          // Sometimes there's a delay between user creation and session availability
           let session = null;
           let attempts = 0;
           const maxAttempts = 10; // 10 attempts = 5 seconds max
@@ -208,6 +284,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           } else {
             console.log('AuthContext: Session established, using authenticated approach');
             
+            // Call invitation acceptance endpoint with user session
             const acceptResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/accept-invitation`, {
               method: 'POST',
               headers: {

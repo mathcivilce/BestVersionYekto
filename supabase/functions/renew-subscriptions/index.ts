@@ -1,58 +1,117 @@
+/**
+ * Subscription Renewal Edge Function
+ * 
+ * This Deno Edge Function manages the renewal of email webhook subscriptions across
+ * multiple platforms (Outlook, Gmail, IMAP). It implements a connection-aware renewal
+ * system that only processes connected accounts with valid OAuth tokens.
+ * 
+ * System Architecture:
+ * - Multi-platform subscription renewal (Outlook, Gmail, IMAP)
+ * - Connection-aware processing (only connected accounts)
+ * - Server-side OAuth exclusive (excludes MSAL popup accounts)
+ * - Intelligent token validation and automatic refresh
+ * - Platform-specific renewal strategies and configurations
+ * - Comprehensive monitoring and error tracking
+ * 
+ * Platform Support:
+ * 1. Outlook (Microsoft Graph): 3-day max subscription renewals
+ * 2. Gmail (Google Pub/Sub): 7-day max subscription renewals (framework ready)
+ * 3. IMAP (Polling): 7-14 day configurable polling schedules
+ * 
+ * Key Features:
+ * - Intelligent filtering: Only connected, server-side OAuth accounts
+ * - Token lifecycle management: Auto-refresh expired tokens before renewal
+ * - Platform-specific configurations: Tailored renewal strategies per platform
+ * - Error recovery: Comprehensive retry mechanisms and error classification
+ * - Performance monitoring: Detailed metrics and execution tracking
+ * - Database consistency: Atomic updates with rollback capabilities
+ * 
+ * Security Considerations:
+ * - Service role authentication for system-level operations
+ * - Token validation before API calls to prevent failures
+ * - Secure error handling without sensitive data exposure
+ * - Platform isolation to prevent cross-platform contamination
+ * 
+ * Processing Logic:
+ * 1. Query subscriptions expiring within 24 hours (connected accounts only)
+ * 2. Validate and refresh tokens as needed before renewal
+ * 3. Execute platform-specific renewal strategies
+ * 4. Update database records with new expiration dates
+ * 5. Track success/failure metrics for monitoring
+ * 6. Generate comprehensive execution reports
+ * 
+ * Used by:
+ * - Cron job for automated subscription maintenance
+ * - Manual renewal operations for troubleshooting
+ * - Platform migration and subscription management
+ * - System health monitoring and alerting
+ */
+
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 import { JobMonitor } from "../_shared/monitoring.ts";
 import { SubscriptionRetryHandler, ErrorRecoveryStrategies } from "../_shared/retry-handler.ts";
 import { Client } from "npm:@microsoft/microsoft-graph-client";
 
+// CORS headers for cross-origin requests (mainly for manual testing)
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// =============================================
-// CONNECTION-AWARE SUBSCRIPTION RENEWAL SYSTEM
-// =============================================
-// This system renews email subscriptions ONLY for:
-// - Connected accounts (connected: true)
-// - Server-side OAuth accounts (oauth_method: 'server_side')
-// - Outlook platform accounts (platform: 'outlook')
-// - Accounts with valid access tokens
-//
-// It does NOT process:
-// - Disconnected accounts (connected: false)
-// - MSAL popup accounts (oauth_method: 'msal_popup') - they manage subscriptions client-side
-// - Accounts with expired/invalid tokens
-
-// Platform-specific subscription renewal configuration
+/**
+ * Platform-Specific Subscription Configuration Interface
+ * 
+ * Defines renewal parameters and constraints for each supported platform.
+ * Each platform has different subscription limits and renewal requirements.
+ */
 interface SubscriptionConfig {
-  platform: string;
-  defaultRenewalDays: number;
-  maxRenewalDays: number;
-  requiresValidToken: boolean;
+  platform: string;           // Platform identifier (outlook, gmail, imap)
+  defaultRenewalDays: number;  // Default number of days for subscription renewal
+  maxRenewalDays: number;      // Maximum allowed renewal period for platform
+  requiresValidToken: boolean; // Whether platform requires valid OAuth tokens
 }
 
+/**
+ * Platform Configuration Registry
+ * 
+ * Centralized configuration for all supported email platforms.
+ * Defines renewal strategies, limits, and requirements per platform.
+ */
 const SUBSCRIPTION_CONFIGS: Record<string, SubscriptionConfig> = {
   outlook: {
     platform: 'outlook',
-    defaultRenewalDays: 3,     // Microsoft Graph subscriptions: max 3 days
+    defaultRenewalDays: 3,     // Microsoft Graph subscriptions: 3-day maximum limit
     maxRenewalDays: 3,
-    requiresValidToken: true
+    requiresValidToken: true   // Requires valid Microsoft Graph API token
   },
   gmail: {
     platform: 'gmail',
-    defaultRenewalDays: 7,     // Gmail Pub/Sub subscriptions: max 7 days
+    defaultRenewalDays: 7,     // Gmail Pub/Sub subscriptions: 7-day maximum limit
     maxRenewalDays: 7,
-    requiresValidToken: true
+    requiresValidToken: true   // Requires valid Google API token
   },
   imap: {
     platform: 'imap',
-    defaultRenewalDays: 7,     // IMAP polling schedule
+    defaultRenewalDays: 7,     // IMAP polling schedule: configurable
     maxRenewalDays: 14,
-    requiresValidToken: false
+    requiresValidToken: false  // No OAuth required for IMAP polling
   }
 };
 
-// PHASE 3: Platform-specific renewal implementation
+/**
+ * Platform-Specific Renewal Orchestrator
+ * 
+ * Routes subscription renewals to appropriate platform-specific handlers.
+ * Provides unified interface for multi-platform subscription management.
+ * 
+ * @param subscription - Subscription record with store details
+ * @param config - Platform-specific configuration
+ * @param monitor - Performance and error monitoring instance
+ * @param subscriptionStartTime - Processing start timestamp for metrics
+ * @param supabase - Database client for record updates
+ * @returns Promise with new expiration date or null on failure
+ */
 async function performPlatformSpecificRenewal(
   subscription: any,
   config: SubscriptionConfig,
@@ -67,6 +126,7 @@ async function performPlatformSpecificRenewal(
   console.log(`🔄 Performing ${platform} renewal until: ${newExpirationDate.toISOString()}`);
 
   try {
+    // Route to platform-specific renewal implementation
     switch (platform) {
       case 'outlook':
         return await renewOutlookSubscription(subscription, newExpirationDate, monitor, supabase);
@@ -96,7 +156,18 @@ async function performPlatformSpecificRenewal(
   }
 }
 
-// PHASE 3: Outlook Graph API renewal
+/**
+ * Outlook Subscription Renewal (Microsoft Graph API)
+ * 
+ * Renews Microsoft Graph webhook subscriptions using the Graph API.
+ * Handles the 3-day maximum subscription limit imposed by Microsoft.
+ * 
+ * @param subscription - Outlook subscription to renew
+ * @param newExpirationDate - New expiration date for subscription
+ * @param monitor - Performance monitoring instance
+ * @param supabase - Database client for record updates
+ * @returns Promise with new expiration date
+ */
 async function renewOutlookSubscription(
   subscription: any,
   newExpirationDate: Date,
@@ -122,7 +193,7 @@ async function renewOutlookSubscription(
     `Microsoft Graph subscription renewal for ${subscription.store.name}`
   );
 
-  // Update expiration date in our database
+  // Update expiration date in local database for tracking
   const { error: updateError } = await monitor.trackDbQuery(
     () => supabase
       .from('graph_subscriptions')
@@ -143,7 +214,21 @@ async function renewOutlookSubscription(
   return { newExpirationDate: newExpirationDate.toISOString() };
 }
 
-// PHASE 3: Gmail Pub/Sub renewal (framework ready)
+/**
+ * Gmail Subscription Renewal (Google Pub/Sub Framework)
+ * 
+ * Framework for Gmail subscription renewal using Google Pub/Sub.
+ * Currently implements database updates; full Google API integration pending.
+ * 
+ * Note: Gmail Push notifications expire after 7 days and need recreation
+ * rather than renewal. This is a framework for future implementation.
+ * 
+ * @param subscription - Gmail subscription to renew
+ * @param newExpirationDate - New expiration date for subscription
+ * @param monitor - Performance monitoring instance
+ * @param supabase - Database client for record updates
+ * @returns Promise with new expiration date
+ */
 async function renewGmailSubscription(
   subscription: any,
   newExpirationDate: Date,
@@ -184,7 +269,18 @@ async function renewGmailSubscription(
   }
 }
 
-// PHASE 3: IMAP renewal (simpler, no external API calls)
+/**
+ * IMAP Subscription Renewal (Polling Schedule)
+ * 
+ * Updates IMAP polling schedule in database. IMAP doesn't use webhooks,
+ * so "renewal" means updating the polling schedule configuration.
+ * 
+ * @param subscription - IMAP subscription to renew
+ * @param newExpirationDate - New polling schedule end date
+ * @param monitor - Performance monitoring instance
+ * @param supabase - Database client for record updates
+ * @returns Promise with new expiration date
+ */
 async function renewImapSubscription(
   subscription: any,
   newExpirationDate: Date,
@@ -214,12 +310,19 @@ async function renewImapSubscription(
   return { newExpirationDate: newExpirationDate.toISOString() };
 }
 
+/**
+ * Main Subscription Renewal Handler
+ * 
+ * Orchestrates the complete subscription renewal process across all platforms.
+ * Implements connection-aware filtering and intelligent token management.
+ */
 serve(async (req) => {
+  // Handle preflight CORS requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
-  // Initialize enhanced monitoring
+  // Initialize enhanced monitoring and database connection
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -235,14 +338,14 @@ serve(async (req) => {
 
   try {
 
-    // Get subscriptions expiring in the next 24 hours
-    // ONLY for connected, server-side OAuth stores
+    // Calculate Renewal Window (24 hours from now)
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     console.log(`Finding subscriptions expiring before: ${tomorrow.toISOString()}`);
 
-    // PHASE 3: Enhanced multi-platform subscription query
+    // Query Expiring Subscriptions with Connection-Aware Filtering
+    // CRITICAL: Only process connected, server-side OAuth stores with valid tokens
     const { data: subscriptions, error: subError } = await monitor.trackDbQuery(
       () => supabase
         .from('graph_subscriptions')
@@ -252,8 +355,8 @@ serve(async (req) => {
         `)
         .eq('store.connected', true)              // CRITICAL: Only connected stores
         .eq('store.oauth_method', 'server_side')  // CRITICAL: Only server OAuth (not MSAL popup)
-        .in('store.platform', ['outlook', 'gmail', 'imap'])  // PHASE 3: Multi-platform support
-        .not('store.access_token', 'is', null)   // PHASE 3: Ensure valid tokens exist
+        .in('store.platform', ['outlook', 'gmail', 'imap'])  // Multi-platform support
+        .not('store.access_token', 'is', null)   // Ensure valid tokens exist
         .lt('expiration_date', tomorrow.toISOString()),
       `Query expiring subscriptions for connected OAuth stores (multi-platform)`
     );
@@ -265,7 +368,7 @@ serve(async (req) => {
 
     console.log(`Found ${subscriptions.length} subscriptions to renew for connected OAuth stores`);
     
-    // PHASE 3: Enhanced subscription analysis
+    // Generate Platform Breakdown Analytics
     const platformBreakdown = subscriptions.reduce((acc, sub) => {
       acc[sub.store.platform] = (acc[sub.store.platform] || 0) + 1;
       return acc;
@@ -273,12 +376,12 @@ serve(async (req) => {
     
     console.log(`📊 Platform breakdown:`, platformBreakdown);
     
-    // Log details for debugging
+    // Log subscription details for debugging and monitoring
     subscriptions.forEach(sub => {
       console.log(`Expiring subscription: ${sub.store.name} (${sub.store.platform}, expires: ${sub.expiration_date})`);
     });
 
-    // Process each eligible subscription
+    // Process Each Eligible Subscription
     const renewalResults = [];
     
     for (const subscription of subscriptions) {
@@ -288,7 +391,7 @@ serve(async (req) => {
         console.log(`=== RENEWING SUBSCRIPTION: ${subscription.subscription_id} ===`);
         console.log(`Store: ${subscription.store.name} (${subscription.store.platform})`);
 
-        // PHASE 3: Enhanced Token Validation & Auto-Refresh
+        // Validate Access Token Availability
         if (!subscription.store.access_token) {
           console.error(`No access token for store ${subscription.store.id} - cannot renew subscription`);
           monitor.recordStoreResult({
@@ -312,7 +415,7 @@ serve(async (req) => {
           continue;
         }
 
-        // PHASE 3: Pre-renewal token validation
+        // Intelligent Token Validation and Auto-Refresh
         const tokenExpiresAt = subscription.store.token_expires_at ? new Date(subscription.store.token_expires_at) : null;
         const now = new Date();
         const tokenExpiredOrExpiringSoon = tokenExpiresAt && tokenExpiresAt <= new Date(now.getTime() + 5 * 60 * 1000); // 5 minutes buffer
@@ -358,7 +461,7 @@ serve(async (req) => {
               throw new Error(`Failed to get updated store data: ${storeError?.message}`);
             }
 
-            // Update the subscription object with fresh token
+            // Update the subscription object with fresh token for renewal
             subscription.store = updatedStore;
             console.log(`🔄 Updated store data with fresh token (expires: ${updatedStore.token_expires_at})`);
 

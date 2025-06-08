@@ -1,8 +1,41 @@
+/**
+ * OAuth Token Refresh Edge Function
+ * 
+ * This function manages automatic refresh of OAuth access tokens for email integrations.
+ * It's designed specifically for server-side OAuth flows that use refresh tokens.
+ * 
+ * Supported Platforms:
+ * - Microsoft Outlook/Office 365 (Azure AD OAuth)
+ * - Google Gmail (Google OAuth) - Future implementation
+ * - Other OAuth providers can be added via platform configuration
+ * 
+ * Key Features:
+ * - Platform-agnostic OAuth token refresh
+ * - Intelligent filtering (only processes eligible stores)
+ * - Comprehensive error handling and recovery strategies
+ * - Performance monitoring and health tracking
+ * - Retry logic with exponential backoff
+ * - Batch processing for multiple stores
+ * 
+ * Store Eligibility Criteria:
+ * - Must be connected (connected: true)
+ * - Must use server-side OAuth (oauth_method: 'server_side')
+ * - Must be an OAuth platform (not IMAP/POP3)
+ * - Must have a valid refresh token
+ * 
+ * Excluded Store Types:
+ * - MSAL popup stores (manage tokens client-side)
+ * - IMAP/POP3 stores (use username/password authentication)
+ * - Disconnected stores
+ * - Stores without refresh tokens
+ */
+
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 import { JobMonitor, SystemHealthMonitor } from "../_shared/monitoring.ts";
 import { OAuthRetryHandler, ErrorRecoveryStrategies } from "../_shared/retry-handler.ts";
 
+// CORS headers for cross-origin requests
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -23,11 +56,13 @@ const corsHeaders = {
 const OAUTH_PLATFORMS = ['outlook', 'gmail'] as const;
 type OAuthPlatform = typeof OAUTH_PLATFORMS[number];
 
+// Request interface for token refresh operations
 interface TokenRefreshRequest {
-  storeId?: string;
-  refreshAllExpiring?: boolean;
+  storeId?: string;           // Refresh specific store by ID
+  refreshAllExpiring?: boolean; // Refresh all stores with expiring tokens
 }
 
+// Microsoft OAuth token response format
 interface MSALTokenResponse {
   access_token: string;
   refresh_token?: string;
@@ -35,16 +70,28 @@ interface MSALTokenResponse {
   token_type: string;
 }
 
-// Platform-specific configuration for OAuth token refresh
+/**
+ * Platform-specific OAuth configuration
+ * 
+ * Each OAuth provider has different endpoints, scopes, and authentication requirements.
+ * This configuration centralizes platform-specific settings for easy maintenance.
+ */
 interface PlatformConfig {
   platform: OAuthPlatform;
-  tokenEndpoint: string;
-  scope: string;
-  clientIdEnv: string;
-  clientSecretEnv?: string; // Optional for PKCE-only flows
+  tokenEndpoint: string;      // OAuth token refresh endpoint
+  scope: string;              // Required OAuth scopes for email access
+  clientIdEnv: string;        // Environment variable name for client ID
+  clientSecretEnv?: string;   // Environment variable name for client secret (optional for PKCE)
 }
 
+/**
+ * OAuth Platform Configurations
+ * 
+ * Centralized configuration for all supported OAuth platforms.
+ * Makes it easy to add new platforms or modify existing ones.
+ */
 const PLATFORM_CONFIGS: Record<OAuthPlatform, PlatformConfig> = {
+  // Microsoft Outlook/Office 365 OAuth Configuration
   outlook: {
     platform: 'outlook',
     tokenEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
@@ -53,6 +100,7 @@ const PLATFORM_CONFIGS: Record<OAuthPlatform, PlatformConfig> = {
     clientSecretEnv: 'AZURE_CLIENT_SECRET'
   },
   
+  // Google Gmail OAuth Configuration (Future Implementation)
   gmail: {
     platform: 'gmail',
     tokenEndpoint: 'https://oauth2.googleapis.com/token',
@@ -61,17 +109,19 @@ const PLATFORM_CONFIGS: Record<OAuthPlatform, PlatformConfig> = {
     clientSecretEnv: 'GOOGLE_CLIENT_SECRET'
   }
   
-  // Future platforms:
+  // Future platforms can be added here:
   // yahoo: { ... },
   // apple: { ... }
 };
 
 serve(async (req) => {
+  // Handle preflight CORS requests
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
-  // Initialize enhanced monitoring
+  // Initialize Supabase client with service role for admin operations
+  // Enhanced monitoring system for tracking performance and errors
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -83,9 +133,11 @@ serve(async (req) => {
     }
   );
 
+  // Initialize job monitoring for performance tracking and error reporting
   const monitor = new JobMonitor('OAuth Token Refresh', 'refresh_tokens', supabase);
 
   try {
+    // Parse request body with fallback to empty object
     const body: TokenRefreshRequest = await req.json().catch(() => ({}));
     const { storeId, refreshAllExpiring = false } = body;
 
@@ -95,6 +147,7 @@ serve(async (req) => {
       // Refresh specific store - ONLY if it's a server-side OAuth store
       console.log(`Refreshing specific store: ${storeId}`);
       
+      // Query for specific store with strict eligibility filters
       const { data: store, error } = await monitor.trackDbQuery(
         () => supabase
           .from('stores')
@@ -138,13 +191,14 @@ serve(async (req) => {
 
       console.log(`Finding OAuth stores with tokens expiring before: ${oneHourFromNow.toISOString()}`);
 
+      // Query for all stores with expiring tokens that meet eligibility criteria
       const { data: expiringStores, error } = await supabase
         .from('stores')
         .select('*')
         .eq('connected', true)                    // CRITICAL: Only connected accounts
         .eq('oauth_method', 'server_side')       // CRITICAL: Only server OAuth (excludes MSAL popup)
         .in('platform', OAUTH_PLATFORMS)         // CRITICAL: Only OAuth platforms (excludes IMAP/POP3)
-        .lt('token_expires_at', oneHourFromNow.toISOString())
+        .lt('token_expires_at', oneHourFromNow.toISOString()) // Expiring within 1 hour
         .not('refresh_token', 'is', null);       // CRITICAL: Must have refresh token
 
       if (error) {
@@ -155,7 +209,7 @@ serve(async (req) => {
       stores = expiringStores || [];
       console.log(`Found ${stores.length} OAuth stores with expiring tokens`);
       
-      // Log details for debugging
+      // Log details for debugging and monitoring
       stores.forEach(store => {
         console.log(`Expiring token: ${store.name} (${store.platform}, expires: ${store.token_expires_at})`);
       });
@@ -199,7 +253,7 @@ serve(async (req) => {
 
         console.log(`Using ${platformConfig.platform} OAuth configuration`);
 
-        // DEBUG: Check if environment variables are available
+        // DEBUG: Validate environment variables are available
         const clientId = Deno.env.get(platformConfig.clientIdEnv);
         const clientSecret = Deno.env.get(platformConfig.clientSecretEnv);
         console.log(`DEBUG - Client ID available: ${clientId ? 'Yes' : 'No'}`);
@@ -226,6 +280,7 @@ serve(async (req) => {
         // Create retry handler for this OAuth operation
         const retryHandler = new OAuthRetryHandler();
         
+        // Attempt token refresh with retry logic and monitoring
         const retryResult = await retryHandler.refreshTokenWithRetry(
           () => monitor.trackApiCall(
             () => fetch(tokenUrl, {
@@ -241,7 +296,7 @@ serve(async (req) => {
         );
 
         if (!retryResult.success) {
-          // Apply error recovery strategy
+          // Apply error recovery strategy based on error type
           const recoveryStrategy = await ErrorRecoveryStrategies.handleOAuthError(
             retryResult.error, 
             store, 

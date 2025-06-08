@@ -1,3 +1,37 @@
+/**
+ * Inbox Context Provider
+ * 
+ * This is the central context for managing email data and store connections throughout the application.
+ * It provides a comprehensive email management system with support for multiple email platforms.
+ * 
+ * Key Features:
+ * - Multi-platform email integration (Outlook, Gmail)
+ * - Real-time email synchronization
+ * - Store connection management (MSAL popup and server-side OAuth)
+ * - Email CRUD operations (read, delete, status updates)
+ * - Token management and automatic refresh
+ * - Real-time updates via Supabase subscriptions
+ * - Error handling and recovery
+ * 
+ * Supported Authentication Methods:
+ * 1. MSAL Popup (Microsoft): Client-side token management
+ * 2. Server-side OAuth: Backend token management with refresh capability
+ * 
+ * Data Flow:
+ * 1. User connects email store (via MSAL or server OAuth)
+ * 2. Store credentials saved to database
+ * 3. Emails synced from email provider APIs
+ * 4. Real-time updates via Supabase subscriptions
+ * 5. Automatic token refresh for expired credentials
+ * 
+ * Context State:
+ * - emails: Array of email objects from all connected stores
+ * - stores: Array of connected email store configurations
+ * - loading: Global loading state for async operations
+ * - error: Error messages for user feedback
+ * - pendingStore: Temporary store data during connection process
+ */
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { PublicClientApplication, InteractionRequiredAuthError, Configuration, AccountInfo } from '@azure/msal-browser';
 import { Client } from '@microsoft/microsoft-graph-client';
@@ -7,58 +41,86 @@ import toast from 'react-hot-toast';
 import { useAuth } from './AuthContext';
 import { TokenManager } from '../utils/tokenManager';
 
+/**
+ * Email data structure
+ * 
+ * Represents a single email message with metadata for display and management.
+ * Includes both original email data and application-specific fields.
+ */
 interface Email {
-  id: string;
-  graph_id?: string;
-  subject: string;
-  snippet: string;
-  content?: string;
-  from: string;
-  date: string;
-  read: boolean;
-  priority: number;
-  status: string;
-  storeName: string;
-  storeColor: string;
-  store_id: string;
-  thread_id?: string;
-  assigned_to?: string | null;
+  id: string;                    // Unique identifier in our database
+  graph_id?: string;             // Microsoft Graph API identifier
+  subject: string;               // Email subject line
+  snippet: string;               // Email preview text
+  content?: string;              // Full email body content
+  from: string;                  // Sender email address
+  date: string;                  // Email received date (ISO string)
+  read: boolean;                 // Read status
+  priority: number;              // Priority level (1-5)
+  status: string;                // Processing status (open, pending, resolved)
+  storeName: string;             // Display name of the email store
+  storeColor: string;            // Color for UI identification
+  store_id: string;              // Reference to the store this email belongs to
+  thread_id?: string;            // Thread/conversation identifier
+  assigned_to?: string | null;   // User assigned to handle this email
 }
 
+/**
+ * Email store configuration
+ * 
+ * Represents a connected email account (Outlook, Gmail, etc.)
+ * with authentication and synchronization settings.
+ */
 interface Store {
-  id: string;
-  name: string;
-  platform: 'outlook' | 'gmail';
-  email: string;
-  connected: boolean;
-  status: 'active' | 'issue' | 'pending' | 'syncing' | 'connecting';
-  color: string;
-  lastSynced?: string;
-  access_token?: string;
-  refresh_token?: string;
-  token_expires_at?: string;
-  token_last_refreshed?: string;
+  id: string;                    // Unique store identifier
+  name: string;                  // User-defined store name
+  platform: 'outlook' | 'gmail'; // Email platform type
+  email: string;                 // Email address of the account
+  connected: boolean;            // Connection status
+  status: 'active' | 'issue' | 'pending' | 'syncing' | 'connecting'; // Current status
+  color: string;                 // UI color for identification
+  lastSynced?: string;           // Last synchronization timestamp
+  access_token?: string;         // OAuth access token
+  refresh_token?: string;        // OAuth refresh token (server-side only)
+  token_expires_at?: string;     // Token expiration timestamp
+  token_last_refreshed?: string; // Last token refresh timestamp
 }
 
+/**
+ * Inbox Context Interface
+ * 
+ * Defines all methods and state available to components using this context.
+ * Provides a comprehensive API for email and store management.
+ */
 interface InboxContextType {
-  emails: Email[];
-  stores: Store[];
+  // State
+  emails: Email[];               // All emails from connected stores
+  stores: Store[];               // All connected email stores
+  loading: boolean;              // Global loading state
+  error: string | null;          // Current error message
+  pendingStore: any | null;      // Store being connected
+  statuses: string[];            // Available email statuses
+  
+  // Email operations
   getEmailById: (id: string) => Email | undefined;
   markAsRead: (id: string) => Promise<void>;
   deleteEmail: (id: string) => Promise<void>;
-  statuses: string[];
-  connectStore: (storeData: any) => Promise<void>;
-  connectStoreServerOAuth: (storeData: any) => Promise<void>;
+  refreshEmails: () => Promise<void>;
+  
+  // Store operations
+  connectStore: (storeData: any) => Promise<void>;           // MSAL popup connection
+  connectStoreServerOAuth: (storeData: any) => Promise<void>; // Server-side OAuth connection
   disconnectStore: (id: string) => Promise<void>;
   syncEmails: (storeId: string, syncFrom?: string, syncTo?: string) => Promise<void>;
-  refreshEmails: () => Promise<void>;
-  loading: boolean;
-  error: string | null;
-  pendingStore: any | null;
 }
 
+// Create the inbox context
 const InboxContext = createContext<InboxContextType | undefined>(undefined);
 
+/**
+ * Custom hook to access inbox context
+ * Throws error if used outside of InboxProvider
+ */
 export const useInbox = () => {
   const context = useContext(InboxContext);
   if (context === undefined) {
@@ -67,47 +129,69 @@ export const useInbox = () => {
   return context;
 };
 
+/**
+ * Microsoft Graph API Scopes
+ * 
+ * Required permissions for accessing Outlook email data.
+ * These scopes are requested during the OAuth flow.
+ */
 const requiredScopes = [
-  'User.Read',
-  'Mail.Read',
-  'Mail.ReadBasic',
-  'offline_access'
+  'User.Read',        // Read user profile information
+  'Mail.Read',        // Read user's email
+  'Mail.ReadBasic',   // Read basic email properties
+  'offline_access'    // Maintain access when user is offline
 ];
 
+/**
+ * MSAL Configuration
+ * 
+ * Configuration for Microsoft Authentication Library (MSAL)
+ * used for Outlook integration via popup authentication.
+ */
 const msalConfig: Configuration = {
   auth: {
     clientId: import.meta.env.VITE_AZURE_CLIENT_ID || '',
-    authority: 'https://login.microsoftonline.com/common',
+    authority: 'https://login.microsoftonline.com/common', // Multi-tenant endpoint
     redirectUri: window.location.origin,
     postLogoutRedirectUri: window.location.origin,
     navigateToLoginRequestUrl: true
   },
   cache: {
-    cacheLocation: 'localStorage',
-    storeAuthStateInCookie: true
+    cacheLocation: 'localStorage',    // Store tokens in localStorage
+    storeAuthStateInCookie: true      // Store auth state in cookies for IE support
   },
   system: {
-    allowNativeBroker: false,
-    windowHashTimeout: 60000,
-    iframeHashTimeout: 6000,
-    loadFrameTimeout: 0,
+    allowNativeBroker: false,         // Disable native broker for web apps
+    windowHashTimeout: 60000,         // Popup window timeout
+    iframeHashTimeout: 6000,          // iframe timeout for silent requests
+    loadFrameTimeout: 0,              // Frame load timeout
     loggerOptions: {
+      // Configure MSAL logging
       loggerCallback: (level, message, containsPii) => {
-        if (containsPii) return;
+        if (containsPii) return; // Skip PII logging
         switch (level) {
-          case 0: console.error(message); break;
-          case 1: console.warn(message); break;
-          case 2: console.info(message); break;
-          case 3: console.debug(message); break;
+          case 0: console.error(message); break;   // Error
+          case 1: console.warn(message); break;    // Warning
+          case 2: console.info(message); break;    // Info
+          case 3: console.debug(message); break;   // Debug
         }
       },
-      piiLoggingEnabled: false
+      piiLoggingEnabled: false // Disable PII logging for security
     }
   }
 };
 
+// Global MSAL instance (singleton pattern)
 let msalInstance: PublicClientApplication | null = null;
 
+/**
+ * Initialize MSAL instance
+ * 
+ * Creates and initializes the MSAL instance for Microsoft authentication.
+ * Uses singleton pattern to ensure only one instance exists.
+ * 
+ * @returns Promise<PublicClientApplication> - Initialized MSAL instance
+ */
 const initializeMsal = async () => {
   if (!msalInstance) {
     if (!import.meta.env.VITE_AZURE_CLIENT_ID) {
@@ -119,32 +203,64 @@ const initializeMsal = async () => {
   return msalInstance;
 };
 
+// Initialize Supabase client for database operations
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+/**
+ * Inbox Provider Component
+ * 
+ * Provides inbox context to all child components and manages:
+ * - Email data loading and synchronization
+ * - Store connection and management
+ * - Real-time updates via Supabase subscriptions
+ * - Token management and refresh
+ * - Error handling and user feedback
+ */
 export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
+  
+  // Core state management
   const [emails, setEmails] = useState<Email[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Initialization and connection state
   const [initialized, setInitialized] = useState(false);
   const [currentAccount, setCurrentAccount] = useState<AccountInfo | null>(null);
   const [pendingStore, setPendingStore] = useState<any>(null);
+  
+  // Real-time and token management
   const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
   const [tokenManager, setTokenManager] = useState<TokenManager | null>(null);
   const [periodicRefreshCleanup, setPeriodicRefreshCleanup] = useState<(() => void) | null>(null);
   
+  // Available email statuses for filtering and management
   const statuses = ['open', 'pending', 'resolved'];
 
+  /**
+   * Get email by ID
+   * 
+   * @param id - Email identifier
+   * @returns Email object or undefined if not found
+   */
   const getEmailById = (id: string) => {
     return emails.find(email => email.id === id);
   };
 
+  /**
+   * Mark email as read
+   * 
+   * Updates the email's read status in the database and local state.
+   * 
+   * @param id - Email identifier
+   */
   const markAsRead = async (id: string) => {
     try {
+      // Update in database
       const { error: updateError } = await supabase
         .from('emails')
         .update({ read: true })
@@ -152,6 +268,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       if (updateError) throw updateError;
 
+      // Update local state
       setEmails(prev => prev.map(email => 
         email.id === id ? { ...email, read: true } : email
       ));
@@ -161,8 +278,16 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  /**
+   * Delete email
+   * 
+   * Removes the email from the database and local state.
+   * 
+   * @param id - Email identifier
+   */
   const deleteEmail = async (id: string) => {
     try {
+      // Delete from database
       const { error: deleteError } = await supabase
         .from('emails')
         .delete()
@@ -170,6 +295,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       if (deleteError) throw deleteError;
 
+      // Remove from local state
       setEmails(prev => prev.filter(email => email.id !== id));
     } catch (error) {
       console.error('Error deleting email:', error);
@@ -177,26 +303,37 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
+  /**
+   * Connect Store via MSAL Popup
+   * 
+   * Connects an Outlook email account using Microsoft's MSAL library
+   * with popup-based authentication. This method stores tokens client-side
+   * and is suitable for personal use or development.
+   * 
+   * @param storeData - Store configuration data
+   */
   const connectStore = async (storeData: any) => {
     try {
       setLoading(true);
       setPendingStore(storeData);
 
+      // Initialize MSAL and perform popup login
       const msalInstance = await initializeMsal();
       const loginRequest = {
         scopes: [...requiredScopes, 'Mail.Send', 'Mail.ReadWrite'],
-        prompt: 'select_account'
+        prompt: 'select_account' // Allow user to select account
       };
 
       const msalResponse = await msalInstance.loginPopup(loginRequest);
       setCurrentAccount(msalResponse.account);
 
+      // Acquire access token silently
       const tokenResponse = await msalInstance.acquireTokenSilent({
         scopes: [...requiredScopes, 'Mail.Send', 'Mail.ReadWrite'],
         account: msalResponse.account
       });
 
-      // Calculate token expiration
+      // Calculate token expiration time
       const expiresAt = new Date();
       if (tokenResponse.expiresOn) {
         expiresAt.setTime(tokenResponse.expiresOn.getTime());
@@ -205,7 +342,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         expiresAt.setHours(expiresAt.getHours() + 1);
       }
 
-      // Get user's business_id
+      // Get user's business_id for multi-tenant support
       const { data: userProfile, error: profileError } = await supabase
         .from('user_profiles')
         .select('business_id')
@@ -216,7 +353,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         throw new Error('Business information not found. Please contact support.');
       }
 
-      // Store with refresh token capability
+      // Prepare store data for database insertion
       const storeInsertData: any = {
         name: storeData.name,
         platform: 'outlook',
@@ -231,8 +368,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         token_last_refreshed: new Date().toISOString()
       };
 
-      // Try to get refresh token from MSAL cache
-      // Note: MSAL manages refresh tokens internally, but we'll store what we can
+      // Handle refresh token (MSAL manages these internally)
       try {
         const account = msalInstance.getAccountByUsername(msalResponse.account.username);
         if (account) {
@@ -244,6 +380,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.warn('Could not access refresh token information:', refreshTokenError);
       }
 
+      // Insert store into database
       const { data: store, error: storeError } = await supabase
         .from('stores')
         .insert(storeInsertData)

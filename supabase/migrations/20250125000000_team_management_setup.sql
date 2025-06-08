@@ -1,80 +1,106 @@
 /*
   # Team Management System Implementation
+  
+  This migration establishes a comprehensive team management system for the email management application.
+  It implements a business-centric multi-tenant architecture where users belong to businesses and
+  can collaborate on email management tasks.
 
-  1. New Tables
-    - `businesses` - Store business information
-    - `team_invitations` - Track pending invitations
+  ## Database Schema Overview:
+  
+  1. **New Tables**
+     - `businesses` - Central business entities that own email stores and team members
+     - `team_invitations` - Manages pending team member invitations with token-based security
 
-  2. Modified Tables
-    - `user_profiles` - Add business relationship and role management
+  2. **Modified Tables**
+     - `user_profiles` - Enhanced with business relationships, roles, and invitation tracking
 
-  3. Security
-    - Business-centric RLS policies
-    - Role-based access control
-    - Invitation system security
+  3. **Security Model**
+     - Business-centric Row Level Security (RLS) policies
+     - Role-based access control (admin, agent, observer)
+     - Secure invitation system with expiring tokens
+     - Multi-tenant data isolation
 
-  4. Functions
-    - Trigger functions for auto-assignment
-    - Permission checking functions
+  4. **Functions & Triggers**
+     - Automatic timestamp updates
+     - Permission checking functions
+     - Data integrity enforcement
+
+  ## Business Model:
+  - Each business can have multiple team members
+  - Users can only belong to one business at a time
+  - Admins can invite new team members and manage business settings
+  - Agents can handle emails and perform day-to-day operations
+  - Observers have read-only access for reporting and monitoring
+
+  ## Security Features:
+  - Complete data isolation between businesses
+  - Token-based invitation system with expiration
+  - Role-based permissions for different operations
+  - Audit trail for invitation acceptance
 */
 
 -- =============================================
 -- 1. CREATE BUSINESSES TABLE
 -- =============================================
+-- Central table for business entities in the multi-tenant system
+-- Each business owns email stores, team members, and related data
 
 CREATE TABLE IF NOT EXISTS businesses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL,
-  created_at timestamptz DEFAULT now(),
-  created_by uuid REFERENCES auth.users NOT NULL,
-  updated_at timestamptz DEFAULT now()
+  name text NOT NULL,                              -- Business display name
+  created_at timestamptz DEFAULT now(),            -- Business creation timestamp
+  created_by uuid REFERENCES auth.users NOT NULL, -- User who created the business
+  updated_at timestamptz DEFAULT now()             -- Last modification timestamp
 );
 
--- Enable RLS on businesses
+-- Enable Row Level Security for multi-tenant data isolation
 ALTER TABLE businesses ENABLE ROW LEVEL SECURITY;
 
--- Create index for performance
+-- Performance optimization: Index on creator for faster lookups
 CREATE INDEX IF NOT EXISTS idx_businesses_created_by ON businesses(created_by);
 
 -- =============================================
 -- 2. MODIFY USER_PROFILES TABLE
 -- =============================================
+-- Enhance existing user profiles with business relationships and team management features
 
--- Add business relationship and role columns
+-- Add business relationship and role management columns
 ALTER TABLE user_profiles 
-ADD COLUMN IF NOT EXISTS business_id uuid REFERENCES businesses(id),
-ADD COLUMN IF NOT EXISTS business_name text,
-ADD COLUMN IF NOT EXISTS role text DEFAULT 'agent' CHECK (role IN ('admin', 'agent', 'observer')),
-ADD COLUMN IF NOT EXISTS invited_by uuid REFERENCES auth.users,
-ADD COLUMN IF NOT EXISTS invitation_token text,
-ADD COLUMN IF NOT EXISTS invitation_expires_at timestamptz;
+ADD COLUMN IF NOT EXISTS business_id uuid REFERENCES businesses(id),     -- Business membership
+ADD COLUMN IF NOT EXISTS business_name text,                             -- Cached business name for performance
+ADD COLUMN IF NOT EXISTS role text DEFAULT 'agent' CHECK (role IN ('admin', 'agent', 'observer')), -- User role within business
+ADD COLUMN IF NOT EXISTS invited_by uuid REFERENCES auth.users,          -- Who invited this user
+ADD COLUMN IF NOT EXISTS invitation_token text,                          -- Invitation token for acceptance
+ADD COLUMN IF NOT EXISTS invitation_expires_at timestamptz;              -- Token expiration time
 
--- Create non-unique index on business_id for performance (NOT unique constraint)
+-- Performance indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_user_profiles_business_id ON user_profiles(business_id);
 CREATE INDEX IF NOT EXISTS idx_user_profiles_invitation_token ON user_profiles(invitation_token);
 
 -- =============================================
 -- 3. CREATE TEAM_INVITATIONS TABLE
 -- =============================================
+-- Manages the invitation workflow for adding new team members to businesses
+-- Provides secure, token-based invitation system with expiration and status tracking
 
 CREATE TABLE IF NOT EXISTS team_invitations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  email text NOT NULL,
-  business_id uuid REFERENCES businesses(id) NOT NULL,
-  role text DEFAULT 'agent' CHECK (role IN ('admin', 'agent', 'observer')),
-  invited_by uuid REFERENCES auth.users NOT NULL,
-  invitation_token text UNIQUE NOT NULL,
-  status text DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'expired', 'cancelled')),
-  expires_at timestamptz NOT NULL,
-  created_at timestamptz DEFAULT now(),
-  accepted_at timestamptz,
-  UNIQUE(email, business_id, status) -- Prevent duplicate pending invitations
+  email text NOT NULL,                                                    -- Invitee's email address
+  business_id uuid REFERENCES businesses(id) NOT NULL,                   -- Target business
+  role text DEFAULT 'agent' CHECK (role IN ('admin', 'agent', 'observer')), -- Assigned role
+  invited_by uuid REFERENCES auth.users NOT NULL,                        -- Inviting user
+  invitation_token text UNIQUE NOT NULL,                                 -- Secure invitation token
+  status text DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'expired', 'cancelled')), -- Invitation status
+  expires_at timestamptz NOT NULL,                                       -- Token expiration time
+  created_at timestamptz DEFAULT now(),                                  -- Invitation creation time
+  accepted_at timestamptz,                                               -- Acceptance timestamp
+  UNIQUE(email, business_id, status) -- Prevent duplicate pending invitations for same email/business
 );
 
--- Enable RLS on team_invitations
+-- Enable Row Level Security for invitation data protection
 ALTER TABLE team_invitations ENABLE ROW LEVEL SECURITY;
 
--- Create indexes
+-- Performance indexes for invitation management queries
 CREATE INDEX IF NOT EXISTS idx_team_invitations_business_id ON team_invitations(business_id);
 CREATE INDEX IF NOT EXISTS idx_team_invitations_token ON team_invitations(invitation_token);
 CREATE INDEX IF NOT EXISTS idx_team_invitations_email_status ON team_invitations(email, status);
@@ -82,25 +108,30 @@ CREATE INDEX IF NOT EXISTS idx_team_invitations_email_status ON team_invitations
 -- =============================================
 -- 4. INITIALIZE EXISTING DATA
 -- =============================================
+-- Migrate existing users to the new business-centric model
+-- Creates a default business for backward compatibility
 
--- Create a default business for existing users
+-- Create a default business for existing users who don't have one
 INSERT INTO businesses (name, created_by)
 SELECT 'Default Business', id
 FROM auth.users
 WHERE id NOT IN (SELECT created_by FROM businesses)
 LIMIT 1;
 
--- Get the default business ID
+-- Assign all existing users to the default business with admin privileges
+-- This ensures backward compatibility for existing installations
 DO $$
 DECLARE
   default_business_id uuid;
 BEGIN
+  -- Get the default business ID
   SELECT id INTO default_business_id 
   FROM businesses 
   WHERE name = 'Default Business' 
   LIMIT 1;
   
   -- Update all existing user profiles to reference the default business
+  -- All existing users become admins of the default business
   UPDATE user_profiles 
   SET business_id = default_business_id,
       business_name = 'Default Business',
@@ -111,15 +142,18 @@ END $$;
 -- =============================================
 -- 5. CLEAR EXISTING RESTRICTIVE POLICIES
 -- =============================================
+-- Remove old single-user policies to implement business-centric security
 
--- Drop existing user_profiles policies
+-- Drop existing user_profiles policies that don't account for business relationships
 DROP POLICY IF EXISTS "Users can manage their own profile" ON user_profiles;
 
 -- =============================================
 -- 6. CREATE NEW BUSINESS-CENTRIC POLICIES
 -- =============================================
+-- Implement comprehensive Row Level Security policies for multi-tenant architecture
 
--- Businesses table policies
+-- BUSINESSES TABLE POLICIES
+-- Users can view their own business information
 CREATE POLICY "Users can view their business"
   ON businesses
   FOR SELECT
@@ -132,6 +166,7 @@ CREATE POLICY "Users can view their business"
     )
   );
 
+-- Only business admins can update business information
 CREATE POLICY "Admins can update their business"
   ON businesses
   FOR UPDATE
@@ -145,13 +180,15 @@ CREATE POLICY "Admins can update their business"
     )
   );
 
+-- Authenticated users can create new businesses (becomes admin automatically)
 CREATE POLICY "Users can create businesses"
   ON businesses
   FOR INSERT
   TO authenticated
   WITH CHECK (auth.uid() = created_by);
 
--- User_profiles table policies
+-- USER_PROFILES TABLE POLICIES
+-- Users can view all profiles within their business (for team collaboration)
 CREATE POLICY "Users can view profiles in their business"
   ON user_profiles
   FOR SELECT
@@ -164,12 +201,14 @@ CREATE POLICY "Users can view profiles in their business"
     )
   );
 
+-- Users can update their own profile information
 CREATE POLICY "Users can update their own profile"
   ON user_profiles
   FOR UPDATE
   TO authenticated
   USING (auth.uid() = user_id);
 
+-- Business admins can manage all team member profiles
 CREATE POLICY "Admins can manage team members"
   ON user_profiles
   FOR ALL
@@ -183,13 +222,14 @@ CREATE POLICY "Admins can manage team members"
     )
   );
 
+-- Allow profile creation during invitation acceptance and by admins
 CREATE POLICY "Allow profile creation during invitation acceptance"
   ON user_profiles
   FOR INSERT
   TO authenticated
   WITH CHECK (
-    auth.uid() = user_id OR
-    business_id IN (
+    auth.uid() = user_id OR  -- Users can create their own profile
+    business_id IN (         -- Admins can create profiles for team members
       SELECT business_id 
       FROM user_profiles 
       WHERE user_id = auth.uid() 
@@ -197,7 +237,7 @@ CREATE POLICY "Allow profile creation during invitation acceptance"
     )
   );
 
--- Team_invitations table policies
+-- TEAM_INVITATIONS TABLE POLICIES
 CREATE POLICY "Users can view invitations for their business"
   ON team_invitations
   FOR SELECT

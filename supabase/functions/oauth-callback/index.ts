@@ -207,13 +207,10 @@ serve(async (req: Request) => {
 
     console.log('Store created/updated:', store.id);
 
-    // Clean up pending request
-    await supabase
-      .from('oauth_pending')
-      .delete()
-      .eq('id', pendingRequest.id);
+    // WEBHOOK SUBSCRIPTION CREATION TEMPORARILY REMOVED FOR TESTING
+    // TODO: Add webhook subscription creation back after OAuth flow is confirmed working
 
-    // Create success response with store data for parent window
+    // Store the result in the database for polling (instead of redirecting)
     const responseData = {
       success: true,
       store: {
@@ -228,35 +225,155 @@ serve(async (req: Request) => {
       }
     };
 
-    // Create a simple redirect to about:blank with the data in the hash
-    // This avoids all sandboxing issues since it's a direct redirect
-    const dataString = encodeURIComponent(JSON.stringify(responseData));
-    
-    return new Response(null, {
-      status: 302,
-      headers: {
-        ...headers,
-        'Location': `about:blank#oauth_success=${dataString}`,
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
+    // Update the pending request with the result (for frontend polling)
+    const { error: updateError } = await supabase
+      .from('oauth_pending')
+      .update({
+        result: responseData,
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', pendingRequest.id);
+
+    if (updateError) {
+      console.error('Failed to update pending request with result:', updateError);
+    } else {
+      console.log('✅ OAuth result stored in database for polling');
+    }
+
+    // Return a simple success page that can close itself
+    return new Response(
+      `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Email Connected Successfully</title>
+        <style>
+          body { 
+            font-family: Arial, sans-serif; 
+            max-width: 600px; 
+            margin: 50px auto; 
+            padding: 20px; 
+            text-align: center;
+          }
+          .success { 
+            background: #eff; 
+            border: 1px solid #cfc; 
+            padding: 30px; 
+            border-radius: 8px; 
+            margin-bottom: 20px;
+          }
+          .success h2 { 
+            color: #363; 
+            margin-top: 0;
+          }
+          .close-btn {
+            background: #0078d4;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 20px;
+          }
+          .close-btn:hover {
+            background: #106ebe;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="success">
+          <h2>✅ Email Account Connected!</h2>
+          <p>Your ${store.platform} account has been connected successfully.</p>
+          <p><strong>Account:</strong> ${userEmail}</p>
+          <p><strong>Store Name:</strong> ${store.name}</p>
+        </div>
+        
+        <button class="close-btn" onclick="window.close()">
+          Close Window & Return to App
+        </button>
+        
+        <script>
+          // Auto-close after 3 seconds
+          setTimeout(() => {
+            window.close();
+          }, 3000);
+        </script>
+      </body>
+      </html>
+      `,
+      { 
+        headers: { ...headers, 'Content-Type': 'text/html' }
       }
-    });
+    );
 
   } catch (error) {
     console.error('OAuth callback error:', error);
-    const errorData = { success: false, error: 'internal_error', description: 'An unexpected error occurred' };
-    const errorString = encodeURIComponent(JSON.stringify(errorData));
-    return new Response(null, {
-      status: 302,
-      headers: {
-        ...headers,
-        'Location': `about:blank#oauth_error=${errorString}`,
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0'
+    
+    // Try to store error result in database if we have state
+    const url = new URL(req.url);
+    const state = url.searchParams.get('state');
+    
+    if (state) {
+      try {
+        const supabase = createClient(
+          Deno.env.get('SUPABASE_URL') ?? '',
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+          {
+            auth: {
+              autoRefreshToken: false,
+              persistSession: false
+            }
+          }
+        );
+        
+        const errorData = { success: false, error: 'internal_error', description: error.message || 'An unexpected error occurred' };
+        
+        await supabase
+          .from('oauth_pending')
+          .update({
+            result: errorData,
+            completed_at: new Date().toISOString()
+          })
+          .eq('state', state);
+      } catch (dbError) {
+        console.error('Failed to store error in database:', dbError);
       }
-    });
+    }
+    
+    return new Response(
+      `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Email Connection Error</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; text-align: center; }
+          .error { background: #fee; border: 1px solid #fcc; padding: 30px; border-radius: 8px; }
+          .error h2 { color: #c33; margin-top: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="error">
+          <h2>❌ Email Connection Error</h2>
+          <p><strong>Error:</strong> ${error.message || 'An unexpected error occurred'}</p>
+          <p>Please close this window and try connecting your email account again.</p>
+        </div>
+        
+        <script>
+          // Auto-close after 5 seconds
+          setTimeout(() => {
+            window.close();
+          }, 5000);
+        </script>
+      </body>
+      </html>
+      `,
+      { 
+        headers: { ...headers, 'Content-Type': 'text/html' },
+        status: 500
+      }
+    );
   }
 });
 

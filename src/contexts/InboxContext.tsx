@@ -31,7 +31,7 @@ interface Store {
   platform: 'outlook' | 'gmail';
   email: string;
   connected: boolean;
-  status: 'active' | 'issue' | 'pending' | 'syncing';
+  status: 'active' | 'issue' | 'pending' | 'syncing' | 'connecting';
   color: string;
   lastSynced?: string;
   access_token?: string;
@@ -353,9 +353,35 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const connectStoreServerOAuth = async (storeData: any) => {
+    let tempStoreId: string | null = null;
+    let connectingStartTime: number;
+    
     try {
       setLoading(true);
       setPendingStore(storeData);
+      connectingStartTime = Date.now(); // Track when connecting starts
+
+      // Create a temporary store with connecting status to show in UI
+      const tempStore: Store = {
+        id: `temp-${Date.now()}`,
+        name: storeData.name,
+        platform: storeData.platform,
+        email: 'Connecting...',
+        connected: false,
+        status: 'connecting',
+        color: storeData.color,
+        lastSynced: undefined
+      };
+      
+      tempStoreId = tempStore.id;
+      console.log('=== ADDING TEMPORARY CONNECTING STORE ===');
+      console.log('Temp store:', tempStore);
+      
+      setStores(prev => {
+        const newStores = [...prev, tempStore];
+        console.log('Stores after adding temp store:', newStores);
+        return newStores;
+      });
 
       // Get user's business_id first
       const { data: userProfile, error: profileError } = await supabase
@@ -419,9 +445,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         throw new Error('Popup was blocked. Please allow popups for this site.');
       }
 
-      // NEW POLLING APPROACH - No JavaScript in popup needed
-      toast.loading('Connecting to Microsoft...', { id: 'oauth-process' });
-      
+      // POLLING APPROACH - Status shown in table, not toasts
       const pollForOAuthResult = () => {
         return new Promise<any>((resolve, reject) => {
           let pollCount = 0;
@@ -434,14 +458,8 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               // Check if popup was closed by user
               if (popup.closed) {
                 clearInterval(pollInterval);
-                toast.error('OAuth cancelled by user', { id: 'oauth-process' });
                 reject(new Error('OAuth cancelled by user'));
                 return;
-              }
-
-              // Show progress every 15 seconds
-              if (pollCount % 15 === 0) {
-                toast.loading(`Still connecting... (${Math.floor(pollCount/15) * 15}s)`, { id: 'oauth-process' });
               }
               
               // Debug first few attempts
@@ -453,7 +471,6 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               if (pollCount >= maxPolls) {
                 clearInterval(pollInterval);
                 popup.close();
-                toast.error('OAuth timeout after 5 minutes', { id: 'oauth-process' });
                 reject(new Error('OAuth timeout after 5 minutes'));
                 return;
               }
@@ -504,40 +521,115 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.log('=== OAUTH POLLING SUCCESS ===');
       console.log('Store data from polling:', newStore);
 
-      // Add the new store to local state
-      const storeWithLastSynced = {
-        ...newStore,
-        lastSynced: newStore.last_synced
-      };
-      
-      setStores(prev => [...prev, storeWithLastSynced]);
-      setPendingStore(null);
+      // Update the temp store with real email but keep "connecting" status during sync
+      console.log('=== UPDATING TEMP STORE WITH REAL EMAIL (STILL CONNECTING) ===');
+      setStores(prev => {
+        return prev.map(store => {
+          if (store.id === tempStoreId) {
+            return {
+              ...store,
+              email: newStore.email, // Update with real email
+              // Keep status as 'connecting' during email sync
+            };
+          }
+          return store;
+        });
+      });
 
       console.log('=== STARTING AUTOMATIC SYNC SETUP (POLLING APPROACH) ===');
       console.log('Store created with ID:', newStore.id);
 
-      // Trigger initial email sync
+      // Trigger initial email sync and webhook creation
       const performInitialSync = async () => {
         try {
           console.log('Performing initial email sync...');
           await syncEmails(newStore.id, storeData.syncFrom, storeData.syncTo);
           console.log('Initial sync completed successfully');
-          toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
-          toast.success('Store connected via server OAuth and emails synced successfully');
+          
+          // Create webhook subscription after successful sync
+          console.log('Creating webhook subscription for server OAuth flow...');
+          console.log('Store ID for webhook:', newStore.id);
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            console.log('Session for webhook:', { hasSession: !!session, hasAccessToken: !!session?.access_token });
+            
+            const webhookResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-webhook-subscription`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${session?.access_token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                storeId: newStore.id
+              })
+            });
+
+            console.log('Webhook response status:', webhookResponse.status);
+            if (webhookResponse.ok) {
+              const webhookData = await webhookResponse.json();
+              console.log('✅ Webhook subscription created (server OAuth):', webhookData);
+            } else {
+              const webhookError = await webhookResponse.text();
+              console.error('❌ Webhook creation failed (server OAuth):', webhookError);
+              console.error('Response status:', webhookResponse.status);
+              // Don't fail the entire process if webhook creation fails
+            }
+          } catch (webhookError) {
+            console.error('❌ Webhook creation error (server OAuth):', webhookError);
+            // Don't fail the entire process if webhook creation fails
+          }
+          
+          // NOW update to final connected store after sync completes
+          const storeWithLastSynced = {
+            ...newStore,
+            connected: true,
+            lastSynced: newStore.last_synced
+          };
+          
+          console.log('=== EMAIL SYNC COMPLETE - UPDATING TO CONNECTED STATUS ===');
+          console.log('Final connected store:', storeWithLastSynced);
+          
+          setStores(prev => {
+            // Remove temp store and add final connected store
+            const filtered = prev.filter(store => store.id !== tempStoreId);
+            const newStores = [...filtered, storeWithLastSynced];
+            console.log('Final stores array after sync:', newStores);
+            return newStores;
+          });
+          
+          toast.success('Email account connected and synced successfully!');
         } catch (syncError) {
           console.error('Initial sync failed:', syncError);
           const errorMessage = (syncError as any)?.message || 'Unknown error';
-          toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
-          toast.error(`Store connected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`);
+          
+          // On sync error, still update to connected but show error
+          const storeWithError = {
+            ...newStore,
+            connected: true,
+            lastSynced: newStore.last_synced
+          };
+          
+          setStores(prev => {
+            const filtered = prev.filter(store => store.id !== tempStoreId);
+            return [...filtered, storeWithError];
+          });
+          
+          toast.error(`Email account connected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`);
         }
       };
 
+      setPendingStore(null);
       performInitialSync();
     } catch (error: any) {
       console.error('Error in server OAuth:', error);
+      
+      // Remove the temporary connecting store on error
+      if (tempStoreId) {
+        setStores(prev => prev.filter(store => store.id !== tempStoreId));
+      }
+      
       setPendingStore(null);
-      toast.dismiss('oauth-process'); // Dismiss the "Connecting to Microsoft" toast
-      toast.error('Failed to connect store via server OAuth: ' + error.message);
+      toast.error('Failed to connect email account: ' + error.message);
       throw error;
     } finally {
       setLoading(false);
@@ -947,7 +1039,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...email,
             storeName: store?.name || '',
             storeColor: store?.color || '#2563eb'
-          };
+          } as Email;
         });
         
         setEmails(emailsWithStore);
@@ -962,11 +1054,25 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     };
 
-    loadData();
+    const loadDataAndSetupRealtime = async () => {
+      await loadData();
 
-    // Set up realtime subscription with better error handling
-    console.log('InboxContext: Setting up real-time subscription');
-    const subscription = supabase
+      // Get user's business_id for business-based real-time filtering
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (!userProfile?.business_id) {
+        console.error('InboxContext: No business_id found for user, cannot set up real-time subscription');
+        setLoading(false);
+        return;
+      }
+
+      // Set up realtime subscription with business-based filtering
+      console.log('InboxContext: Setting up real-time subscription for business:', userProfile.business_id);
+      const subscription = supabase
       .channel('inbox-emails')
       .on(
         'postgres_changes',
@@ -974,57 +1080,65 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           event: 'INSERT',
           schema: 'public',
           table: 'emails',
-          filter: `user_id=eq.${user.id}`
+          filter: `business_id=eq.${userProfile.business_id}`
         },
         async (payload) => {
-          console.log('InboxContext: Received real-time email update:', payload);
-          const newEmail = payload.new;
+          try {
+            console.log('🔥 InboxContext: Received real-time email INSERT:', payload);
+            const newEmail = payload.new as any;
+            
+            console.log('New email details:', {
+              id: newEmail.id,
+              graph_id: newEmail.graph_id,
+              subject: newEmail.subject,
+              from: newEmail.from,
+              store_id: newEmail.store_id,
+              user_id: newEmail.user_id
+            });
 
-          // SECURITY: Get stores for user's business only
-          const { data: userProfile } = await supabase
-            .from('user_profiles')
-            .select('business_id')
-            .eq('user_id', user.id)
-            .single();
-
-          if (!userProfile?.business_id) {
-            console.error('InboxContext: No business_id found for realtime update');
-            return;
-          }
-
-          const { data: currentStores } = await supabase
-            .from('stores')
-            .select('*')
-            .eq('business_id', userProfile.business_id);
-
-          const store = currentStores?.find(s => s.id === newEmail.store_id);
-          
-          // SECURITY: Only process emails for stores in user's business
-          if (!store) {
-            console.warn('InboxContext: Received email for store not in user business:', newEmail.store_id);
-            return;
-          }
-          
-          const emailWithStore: Email = {
-            ...newEmail,
-            storeName: store?.name || '',
-            storeColor: store?.color || '#2563eb'
-          };
-
-          // Check if email already exists to avoid duplicates
-          setEmails(prev => {
-            const exists = prev.some(e => e.graph_id === newEmail.graph_id);
-            if (!exists) {
-              console.log('InboxContext: Adding new email to state');
-              const updated = [emailWithStore, ...prev].sort((a, b) => 
-                new Date(b.date).getTime() - new Date(a.date).getTime()
-              );
-              toast.success(`New email from ${newEmail.from}`);
-              return updated;
+            // Use current stores from state instead of fetching again
+            const currentStores = stores;
+            const store = currentStores.find(s => s.id === newEmail.store_id);
+            
+            if (!store) {
+              console.warn('InboxContext: Store not found in current stores for real-time email:', newEmail.store_id);
+              console.log('Available stores:', currentStores.map(s => ({ id: s.id, name: s.name })));
+              return;
             }
-            console.log('InboxContext: Email already exists, skipping');
-            return prev;
-          });
+            
+            console.log('Found store for email:', { storeId: store.id, storeName: store.name });
+            
+            const emailWithStore: Email = {
+              ...newEmail,
+              storeName: store.name,
+              storeColor: store.color
+            } as Email;
+
+            // Check if email already exists to avoid duplicates
+            setEmails(prev => {
+              const exists = prev.some(e => e.graph_id === newEmail.graph_id || e.id === newEmail.id);
+              if (!exists) {
+                console.log('✅ InboxContext: Adding new email to state:', newEmail.subject);
+                const updated = [emailWithStore, ...prev].sort((a, b) => 
+                  new Date(b.date).getTime() - new Date(a.date).getTime()
+                );
+                
+                // Show toast notification
+                try {
+                  toast.success(`📧 New email from ${newEmail.from}`);
+                } catch (toastError) {
+                  console.warn('Toast notification failed:', toastError);
+                }
+                
+                return updated;
+              } else {
+                console.log('⚠️ InboxContext: Email already exists, skipping:', newEmail.graph_id || newEmail.id);
+                return prev;
+              }
+            });
+          } catch (error) {
+            console.error('❌ InboxContext: Error processing real-time email:', error);
+          }
         }
       )
       .on(
@@ -1067,7 +1181,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             ...updatedEmail,
             storeName: store?.name || '',
             storeColor: store?.color || '#2563eb'
-          };
+          } as Email;
 
           setEmails(prev => prev.map(email => 
             email.id === updatedEmail.id ? emailWithStore : email
@@ -1075,18 +1189,30 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       )
       .subscribe((status) => {
-        console.log('InboxContext: Subscription status:', status);
+        console.log('🔄 InboxContext: Real-time subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Real-time subscription is active and ready');
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Real-time subscription error');
+        } else if (status === 'TIMED_OUT') {
+          console.warn('⏰ Real-time subscription timed out');
+        } else if (status === 'CLOSED') {
+          console.log('🔒 Real-time subscription closed');
+        }
       });
 
-    setRealtimeSubscription(subscription);
+      setRealtimeSubscription(subscription);
+    };
+
+    loadDataAndSetupRealtime();
 
     return () => {
       console.log('InboxContext: Cleaning up subscriptions');
-      if (subscription) {
-        supabase.removeChannel(subscription);
+      if (realtimeSubscription) {
+        supabase.removeChannel(realtimeSubscription);
       }
     };
-  }, [user]);
+  }, [user, stores]);
 
   const value = {
     emails,

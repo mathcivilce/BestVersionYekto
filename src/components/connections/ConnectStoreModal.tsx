@@ -35,9 +35,9 @@ const ConnectStoreModal: React.FC<ConnectStoreModalProps> = ({ isOpen, onClose }
     e.preventDefault();
     try {
       // Always use server-side OAuth for production reliability
-      await connectStoreServerOAuth(storeData);
+      await connectStoreServerOAuth(storeData);  
       onClose();
-      toast.success('Email account connected successfully!');
+      // Don't show success toast here - the OAuth process handles its own toasts
     } catch (err: any) {
       console.error('Error connecting email account:', err);
       toast.error(err.message || 'Failed to connect email account');

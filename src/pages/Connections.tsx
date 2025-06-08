@@ -120,11 +120,17 @@ const Connections: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        store.connected
+                        store.status === 'connecting'
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : store.connected
                           ? 'bg-green-100 text-green-800'
                           : 'bg-red-100 text-red-800'
                       }`}>
-                        {store.connected ? '🟢 Connected' : '🔴 Disconnected'}
+                        {store.status === 'connecting' 
+                          ? '🟡 Connecting' 
+                          : store.connected 
+                          ? '🟢 Connected' 
+                          : '🔴 Disconnected'}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">

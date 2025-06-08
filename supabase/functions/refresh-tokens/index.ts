@@ -199,6 +199,13 @@ serve(async (req) => {
 
         console.log(`Using ${platformConfig.platform} OAuth configuration`);
 
+        // DEBUG: Check if environment variables are available
+        const clientId = Deno.env.get(platformConfig.clientIdEnv);
+        const clientSecret = Deno.env.get(platformConfig.clientSecretEnv);
+        console.log(`DEBUG - Client ID available: ${clientId ? 'Yes' : 'No'}`);
+        console.log(`DEBUG - Client Secret available: ${clientSecret ? 'Yes' : 'No'}`);
+        console.log(`DEBUG - Client Secret length: ${clientSecret ? clientSecret.length : 0}`);
+
         // Prepare platform-specific token refresh request
         const tokenUrl = platformConfig.tokenEndpoint;
         const refreshParams = new URLSearchParams({

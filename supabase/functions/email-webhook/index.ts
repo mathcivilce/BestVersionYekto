@@ -81,9 +81,20 @@ serve(async (req) => {
       });
 
       try {
+        // Extract message ID from resource path
+        // Resource format: "Users/{userId}/Messages/{messageId}"
+        const messageId = resource.split('/Messages/')[1];
+        
+        if (!messageId) {
+          console.error('Could not extract message ID from resource:', resource);
+          continue;
+        }
+        
+        console.log('Processing message ID:', messageId);
+        
         // Fetch message details
         const message = await graphClient
-          .api(`/me/messages/${resource.split('messages/')[1]}`)
+          .api(`/me/messages/${messageId}`)
           .select('id,subject,bodyPreview,from,receivedDateTime,isRead,body,conversationId,internetMessageId')
           .get();
 
@@ -104,6 +115,7 @@ serve(async (req) => {
             status: 'open',
             store_id: store.id,
             user_id: store.user_id,
+            business_id: store.business_id,
             internet_message_id: message.internetMessageId
           }, {
             onConflict: 'graph_id,user_id',

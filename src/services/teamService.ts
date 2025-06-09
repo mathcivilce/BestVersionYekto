@@ -397,7 +397,7 @@ export class TeamService {
       // Get target user's profile before removal for logging
       const { data: targetProfile, error: targetError } = await supabase
         .from('user_profiles')
-        .select('user_id, first_name, last_name, email, role, business_id')
+        .select('user_id, first_name, last_name, role, business_id')
         .eq('user_id', userId)
         .single();
 

@@ -1107,6 +1107,17 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     if (!user) return;
 
+    // Prevent multiple subscriptions with a flag
+    let isSubscriptionActive = true;
+    let currentSubscription: any = null;
+
+    // Clean up any existing subscription first to prevent duplicate subscriptions
+    if (realtimeSubscription) {
+      console.log('InboxContext: Cleaning up existing subscription before reload');
+      supabase.removeChannel(realtimeSubscription);
+      setRealtimeSubscription(null);
+    }
+
     const loadData = async () => {
       try {
         console.log('InboxContext: Starting data load for user:', user.id);
@@ -1194,11 +1205,17 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const loadDataAndSetupRealtime = async () => {
       await loadData();
 
+      // Check if subscription is still active (component not unmounted)
+      if (!isSubscriptionActive) {
+        console.log('InboxContext: Subscription cancelled, component unmounted');
+        return;
+      }
+
       // Get user's business_id for business-based real-time filtering
       const { data: userProfile } = await supabase
         .from('user_profiles')
         .select('business_id')
-        .eq('user_id', user.id)
+        .eq('user_id', user!.id)
         .single();
 
       if (!userProfile?.business_id) {
@@ -1207,10 +1224,17 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
+      // Check again if subscription is still active after async operation
+      if (!isSubscriptionActive) {
+        console.log('InboxContext: Subscription cancelled during setup');
+        return;
+      }
+
       // Set up realtime subscription with business-based filtering
+      // Use unique channel name per business to prevent conflicts
       console.log('InboxContext: Setting up real-time subscription for business:', userProfile.business_id);
       const subscription = supabase
-      .channel('inbox-emails')
+      .channel(`inbox-emails-${userProfile.business_id}`)
       .on(
         'postgres_changes',
         {
@@ -1233,13 +1257,17 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               user_id: newEmail.user_id
             });
 
-            // Use current stores from state instead of fetching again
-            const currentStores = stores;
-            const store = currentStores.find(s => s.id === newEmail.store_id);
+            // Get fresh stores data to ensure we have current state
+            const { data: currentStoresData } = await supabase
+              .from('stores')
+              .select('*')
+              .eq('business_id', userProfile.business_id);
+            
+            const store = currentStoresData?.find(s => s.id === newEmail.store_id);
             
             if (!store) {
-              console.warn('InboxContext: Store not found in current stores for real-time email:', newEmail.store_id);
-              console.log('Available stores:', currentStores.map(s => ({ id: s.id, name: s.name })));
+              console.warn('InboxContext: Store not found for real-time email:', newEmail.store_id);
+              console.log('Available stores:', currentStoresData?.map(s => ({ id: s.id, name: s.name })));
               return;
             }
             
@@ -1293,7 +1321,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const { data: userProfile } = await supabase
             .from('user_profiles')
             .select('business_id')
-            .eq('user_id', user.id)
+            .eq('user_id', user!.id)
             .single();
 
           if (!userProfile?.business_id) {
@@ -1338,18 +1366,38 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       });
 
-      setRealtimeSubscription(subscription);
+      // Store subscription reference for cleanup
+      currentSubscription = subscription;
+      
+      // Only set state if subscription is still active
+      if (isSubscriptionActive) {
+        setRealtimeSubscription(subscription);
+      } else {
+        // Clean up immediately if cancelled
+        supabase.removeChannel(subscription);
+      }
     };
 
     loadDataAndSetupRealtime();
 
     return () => {
       console.log('InboxContext: Cleaning up subscriptions');
+      
+      // Mark subscription as inactive to prevent new ones
+      isSubscriptionActive = false;
+      
+      // Clean up current subscription
+      if (currentSubscription) {
+        supabase.removeChannel(currentSubscription);
+      }
+      
+      // Clean up state subscription if it exists
       if (realtimeSubscription) {
         supabase.removeChannel(realtimeSubscription);
+        setRealtimeSubscription(null);
       }
     };
-  }, [user, stores]);
+  }, [user?.id]); // Only depend on user.id to prevent unnecessary re-subscriptions
 
   const value = {
     emails,

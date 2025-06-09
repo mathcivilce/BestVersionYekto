@@ -13,7 +13,7 @@
  * signup where users can join existing businesses through invitation tokens.
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 
@@ -101,18 +101,45 @@ export const useAuth = () => {
  * 
  * Provides authentication state and methods to all child components.
  * Handles session persistence and automatic auth state changes.
+ * 
+ * PERFORMANCE FIX: Uses useMemo to stabilize user object and prevent 
+ * infinite re-render loops in components that depend on this context.
  */
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Stabilize user object to prevent infinite re-renders in child components
+  const memoizedUser = useMemo(() => {
+    return user;
+  }, [user?.id, user?.email]); // Only recreate when actual user data changes
+
+  // Helper function to create user object only when data actually changes
+  const createUserFromSession = useCallback((sessionUser: any): User => {
+    return {
+      id: sessionUser.id,
+      email: sessionUser.email!,
+    };
+  }, []);
+
+  // Helper function to compare user objects for equality
+  const usersAreEqual = useCallback((user1: User | null, user2: User | null): boolean => {
+    if (!user1 && !user2) return true;
+    if (!user1 || !user2) return false;
+    return user1.id === user2.id && user1.email === user2.email;
+  }, []);
+
   useEffect(() => {
     // Check for existing session on app startup
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email!,
+        const newUser = createUserFromSession(session.user);
+        setUser(prevUser => {
+          // Only update if user data actually changed
+          if (!usersAreEqual(prevUser, newUser)) {
+            return newUser;
+          }
+          return prevUser;
         });
       }
       setLoading(false);
@@ -122,19 +149,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // This handles login, logout, token refresh, etc.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email!,
+        const newUser = createUserFromSession(session.user);
+        setUser(prevUser => {
+          // Only update if user data actually changed - prevents unnecessary re-renders
+          if (!usersAreEqual(prevUser, newUser)) {
+            return newUser;
+          }
+          return prevUser;
         });
       } else {
-        setUser(null);
+        setUser(prevUser => {
+          // Only set to null if not already null
+          return prevUser !== null ? null : prevUser;
+        });
       }
       setLoading(false);
     });
 
     // Cleanup subscription on unmount
     return () => subscription.unsubscribe();
-  }, []);
+  }, [createUserFromSession, usersAreEqual]);
 
   /**
    * Log in user with email and password
@@ -143,7 +177,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * @param password - User's password
    * @throws Error if login fails
    */
-  const login = async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     try {
       setLoading(true);
       const { error } = await supabase.auth.signInWithPassword({
@@ -158,7 +192,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   /**
    * Register new user with email confirmation
@@ -169,7 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * @param lastName - User's last name
    * @throws Error if registration fails
    */
-  const register = async (email: string, password: string, firstName: string, lastName: string) => {
+  const register = useCallback(async (email: string, password: string, firstName: string, lastName: string) => {
     try {
       setLoading(true);
       const { error } = await supabase.auth.signUp({
@@ -193,7 +227,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   /**
    * Sign up user (supports both regular and invitation-based registration)
@@ -208,7 +242,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * - Processes invitation token to join existing business
    * - Handles session establishment for immediate login
    */
-  const signUp = async (email: string, password: string, metadata?: any) => {
+  const signUp = useCallback(async (email: string, password: string, metadata?: any) => {
     try {
       setLoading(true);
       
@@ -327,9 +361,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await supabase.auth.signOut();
       setUser(null);
@@ -337,16 +371,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       toast.error('Failed to log out');
       throw error;
     }
-  };
+  }, []);
 
-  const value = {
-    user,
+  // Memoize context value to prevent unnecessary re-renders in child components
+  // Only recreate when actual dependencies change
+  const value = useMemo(() => ({
+    user: memoizedUser,
     login,
     register,
     signUp,
     logout,
     loading
-  };
+  }), [memoizedUser, login, register, signUp, logout, loading]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

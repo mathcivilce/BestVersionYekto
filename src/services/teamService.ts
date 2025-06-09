@@ -365,14 +365,26 @@ export class TeamService {
 
   static async removeMember(userId: string): Promise<void> {
     try {
+      console.log('TeamService: removeMember() called for userId:', userId);
+      
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
-      const { data: currentProfile } = await supabase
+      console.log('TeamService: Current user:', user.id);
+
+      // Get current user's profile with business info
+      const { data: currentProfile, error: profileError } = await supabase
         .from('user_profiles')
-        .select('role, user_id')
+        .select('role, user_id, business_id, business_name')
         .eq('user_id', user.id)
         .single();
+
+      if (profileError) {
+        console.error('TeamService: Error fetching current user profile:', profileError);
+        throw new Error('Failed to verify admin permissions');
+      }
+
+      console.log('TeamService: Current user profile:', currentProfile);
 
       if (currentProfile?.role !== 'admin') {
         throw new Error('Only admins can remove members');
@@ -382,19 +394,68 @@ export class TeamService {
         throw new Error('Cannot remove yourself from the team');
       }
 
-      // Set business_id to null to remove association
-      const { error } = await supabase
+      // Get target user's profile before removal for logging
+      const { data: targetProfile, error: targetError } = await supabase
+        .from('user_profiles')
+        .select('user_id, first_name, last_name, email, role, business_id')
+        .eq('user_id', userId)
+        .single();
+
+      if (targetError) {
+        console.error('TeamService: Error fetching target user profile:', targetError);
+        throw new Error('Target user not found');
+      }
+
+      console.log('TeamService: Target user profile before removal:', targetProfile);
+
+      // Verify target user is in the same business
+      if (targetProfile.business_id !== currentProfile.business_id) {
+        throw new Error('Cannot remove member from different business');
+      }
+
+      // Set business_id to null to remove association (soft delete)
+      // This preserves the user account but removes business access
+      console.log('TeamService: Attempting to remove member from business...');
+      
+      const { data: updateResult, error: updateError } = await supabase
         .from('user_profiles')
         .update({ 
-          business_id: null, 
-          business_name: null,
-          role: 'agent'
+          business_id: null,           // Remove business association
+          business_name: null,         // Clear business name
+          role: 'agent'               // Reset to default role
         })
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .select(); // Return updated row for verification
 
-      if (error) throw error;
+      if (updateError) {
+        console.error('TeamService: Database update error:', updateError);
+        console.error('TeamService: Error details:', {
+          message: updateError.message,
+          code: updateError.code,
+          details: updateError.details,
+          hint: updateError.hint
+        });
+        throw new Error(`Failed to remove member: ${updateError.message}`);
+      }
+
+      console.log('TeamService: Update result:', updateResult);
+
+      if (!updateResult || updateResult.length === 0) {
+        console.error('TeamService: No rows were updated');
+        throw new Error('Failed to remove member - no rows affected');
+      }
+
+      console.log('TeamService: ✅ Member successfully removed from business');
+      console.log('TeamService: Removed member details:', {
+        userId: targetProfile.user_id,
+        name: `${targetProfile.first_name || ''} ${targetProfile.last_name || ''}`.trim(),
+        previousRole: targetProfile.role,
+        removedFromBusiness: currentProfile.business_name
+      });
+
     } catch (error) {
-      console.error('Error removing member:', error);
+      console.error('TeamService: Error in removeMember:', error);
+      console.error('TeamService: Error stack:', (error as any)?.stack);
       throw error;
     }
   }

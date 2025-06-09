@@ -1,15 +1,37 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Mail, Loader2, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
 import ConnectStoreModal from '../components/connections/ConnectStoreModal';
 import { useInbox } from '../contexts/InboxContext';
+import { TeamService } from '../services/teamService';
+import { UserProfile } from '../types/team';
 
 const Connections: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
   const { stores, disconnectStore, loading, error } = useInbox();
   
   // Filter for email-connected stores only
   const emailStores = stores.filter(store => store.platform === 'outlook');
+
+  // Check if current user is admin
+  const isAdmin = userProfile?.role === 'admin';
+
+  useEffect(() => {
+    const loadUserProfile = async () => {
+      try {
+        const profile = await TeamService.getCurrentUserProfile();
+        setUserProfile(profile);
+      } catch (error) {
+        console.error('Error loading user profile:', error);
+      } finally {
+        setProfileLoading(false);
+      }
+    };
+
+    loadUserProfile();
+  }, []);
 
   const handleDisconnect = async (storeId: string) => {
     try {
@@ -19,7 +41,7 @@ const Connections: React.FC = () => {
     }
   };
   
-  if (loading) {
+  if (loading || profileLoading) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center">
@@ -53,13 +75,15 @@ const Connections: React.FC = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-medium text-gray-900">Email Integrations</h2>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-        >
-          <Plus size={16} className="mr-2" />
-          Connect Email
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
+          >
+            <Plus size={16} className="mr-2" />
+            Connect Email
+          </button>
+        )}
       </div>
 
       <div className="bg-white shadow-sm rounded-lg border border-gray-200">
@@ -71,15 +95,20 @@ const Connections: React.FC = () => {
               </div>
               <h3 className="text-lg font-medium text-gray-900 mb-1">No email accounts connected</h3>
               <p className="text-gray-500 mb-4 max-w-md mx-auto">
-                Connect your email accounts to start managing customer support in one place.
+                {isAdmin 
+                  ? "Connect your email accounts to start managing customer support in one place."
+                  : "No email accounts have been connected yet. Contact your admin to connect email accounts."
+                }
               </p>
-              <button
-                onClick={() => setIsModalOpen(true)}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-              >
-                <Plus size={16} className="mr-2" />
-                Connect Your First Email
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => setIsModalOpen(true)}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
+                >
+                  <Plus size={16} className="mr-2" />
+                  Connect Your First Email
+                </button>
+              )}
             </div>
           ) : (
             <table className="min-w-full divide-y divide-gray-200">
@@ -97,9 +126,11 @@ const Connections: React.FC = () => {
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Last Synced
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
+                  {isAdmin && (
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -136,14 +167,16 @@ const Connections: React.FC = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {store.lastSynced ? format(new Date(store.lastSynced), 'PPp') : 'Never'}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      <button
-                        onClick={() => handleDisconnect(store.id)}
-                        className="text-red-600 hover:text-red-900"
-                      >
-                        Disconnect
-                      </button>
-                    </td>
+                    {isAdmin && (
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <button
+                          onClick={() => handleDisconnect(store.id)}
+                          className="text-red-600 hover:text-red-900"
+                        >
+                          Disconnect
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -152,10 +185,12 @@ const Connections: React.FC = () => {
         </div>
       </div>
       
-      <ConnectStoreModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-      />
+      {isAdmin && (
+        <ConnectStoreModal
+          isOpen={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

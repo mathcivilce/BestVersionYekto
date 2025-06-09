@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { X, Inbox, Settings, LayoutDashboard, Mail, ShoppingBag, ChevronDown, ChevronRight, FileText, Users, Activity } from 'lucide-react';
+import { X, Inbox, Settings, LayoutDashboard, Mail, ShoppingBag, ChevronDown, ChevronRight, FileText, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useInbox } from '../../contexts/InboxContext';
 
@@ -29,7 +29,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
 
   const navItems = [
     { path: '/dashboard', icon: <LayoutDashboard size={20} />, label: 'Dashboard' },
-    { path: '/system-health', icon: <Activity size={20} />, label: 'System Health' },
     { 
       path: '/inbox',
       icon: <Inbox size={20} />,
@@ -81,8 +80,8 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
         </button>
 
         <div className="px-4 py-6">
-          <Link to="/dashboard" className="flex items-center" onClick={closeSidebar}>
-            <span className="text-xl font-semibold text-sidebar-text-active">Yekto</span>
+          <Link to="/dashboard" className="flex items-center justify-center" onClick={closeSidebar}>
+            <span className="text-2xl font-bold text-sidebar-text-active tracking-wide">YEKTO</span>
           </Link>
         </div>
 

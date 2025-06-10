@@ -16,7 +16,7 @@
  * Key Features:
  * - Subscription validation handling for Graph API compliance
  * - Client state verification for security
- * - Real-time email synchronization
+ * - Real-time email synchronization with Universal RFC2822 Threading
  * - Token expiration handling with automatic store status updates
  * - Duplicate prevention using composite unique constraints
  * - Multi-tenant support with business/user isolation
@@ -37,6 +37,30 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+/**
+ * Extract specific header value from internetMessageHeaders array
+ */
+function extractHeader(headers: any[], headerName: string): string | null {
+  if (!headers || !Array.isArray(headers)) return null;
+  
+  const header = headers.find(h => 
+    h.name && h.name.toLowerCase() === headerName.toLowerCase()
+  );
+  
+  return header?.value || null;
+}
+
+/**
+ * Extract multiple Message-IDs from References header
+ */
+function extractReferences(referencesHeader: string | null): string | null {
+  if (!referencesHeader) return null;
+  
+  // References header contains space-separated Message-IDs in angle brackets
+  // Example: "<id1@domain.com> <id2@domain.com> <id3@domain.com>"
+  return referencesHeader.trim();
+}
 
 serve(async (req) => {
   // Handle preflight CORS requests
@@ -133,13 +157,48 @@ serve(async (req) => {
         console.log('Processing message ID:', messageId);
         
         // Fetch detailed message information from Microsoft Graph API
-        // We select specific fields to optimize the API call and reduce payload size
+        // Enhanced to include internetMessageHeaders for universal threading
         const message = await graphClient
           .api(`/me/messages/${messageId}`)
-          .select('id,subject,bodyPreview,from,receivedDateTime,isRead,body,conversationId,internetMessageId')
+          .select('id,subject,bodyPreview,from,toRecipients,receivedDateTime,isRead,body,conversationId,internetMessageId,internetMessageHeaders')
           .get();
 
-        // Save email to database with duplicate prevention
+        // Extract RFC2822 headers for universal email threading
+        const messageIdHeader = extractHeader(message.internetMessageHeaders, 'Message-ID') || message.internetMessageId;
+        const inReplyToHeader = extractHeader(message.internetMessageHeaders, 'In-Reply-To');
+        const referencesHeader = extractReferences(extractHeader(message.internetMessageHeaders, 'References'));
+        
+        // Extract recipient emails for threading context
+        const toEmails = message.toRecipients?.map((r: any) => r.emailAddress?.address).filter(Boolean).join(',') || '';
+
+        console.log('Threading headers extracted:', {
+          messageId: messageIdHeader,
+          inReplyTo: inReplyToHeader,
+          references: referencesHeader
+        });
+
+        // 🎯 UNIVERSAL THREADING: Use new universal threading function
+        // This uses RFC2822 standards that work across all email platforms
+        const { data: threadResult, error: threadError } = await supabase
+          .rpc('get_or_create_thread_id_universal', {
+            p_message_id_header: messageIdHeader,
+            p_in_reply_to_header: inReplyToHeader,
+            p_references_header: referencesHeader,
+            p_subject: message.subject || 'No Subject',
+            p_from_email: message.from?.emailAddress?.address || '',
+            p_to_email: toEmails,
+            p_date: message.receivedDateTime || new Date().toISOString(),
+            p_user_id: store.user_id,
+            p_store_id: store.id
+          });
+
+        if (threadError) {
+          console.error('Error getting thread ID:', threadError);
+        }
+
+        const universalThreadId = threadResult || messageIdHeader || message.conversationId;
+
+        // Save email to database with universal threading
         // Using upsert with composite unique constraint (graph_id, user_id)
         // to prevent duplicate emails from being stored
         const { error: saveError } = await supabase
@@ -147,7 +206,7 @@ serve(async (req) => {
           .upsert({
             id: crypto.randomUUID(),                                  // Internal unique ID
             graph_id: message.id,                                     // Microsoft Graph message ID
-            thread_id: message.conversationId,                       // Email thread/conversation ID
+            thread_id: universalThreadId,                            // Universal thread ID using RFC2822 standards
             subject: message.subject || 'No Subject',                // Email subject line
             from: message.from?.emailAddress?.address || '',         // Sender email address
             snippet: message.bodyPreview || '',                      // Email preview text
@@ -159,7 +218,12 @@ serve(async (req) => {
             store_id: store.id,                                      // Associated email store
             user_id: store.user_id,                                  // User who owns this email
             business_id: store.business_id,                          // Business context for multi-tenancy
-            internet_message_id: message.internetMessageId          // Standard email message ID
+            internet_message_id: message.internetMessageId,         // Standard email message ID
+            microsoft_conversation_id: message.conversationId,      // Store original conversationId for reference
+            message_id_header: messageIdHeader,                     // RFC2822 Message-ID header
+            in_reply_to_header: inReplyToHeader,                    // RFC2822 In-Reply-To header
+            references_header: referencesHeader,                    // RFC2822 References header
+            conversation_root_id: universalThreadId                 // Root message ID for this conversation
           }, {
             onConflict: 'graph_id,user_id',                         // Composite unique constraint
             ignoreDuplicates: true                                   // Skip if duplicate exists
@@ -170,7 +234,7 @@ serve(async (req) => {
           continue; // Continue processing other notifications even if one fails
         }
 
-        console.log('Email saved successfully:', message.id);
+        console.log('Email saved successfully with universal threading:', message.id);
         
       } catch (error) {
         console.error('Error processing message:', error);

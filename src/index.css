@@ -1,3 +1,22 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ReactQuill custom styles */
+.rich-text-editor .ql-container {
+  border: none !important;
+}
+
+.rich-text-editor .ql-toolbar {
+  border: none !important;
+  border-bottom: 1px solid #e5e7eb !important;
+}
+
+.rich-text-editor .ql-editor {
+  min-height: 150px;
+}
+
+.rich-text-editor .ql-editor.ql-blank::before {
+  font-style: normal;
+  color: #9ca3af;
+}

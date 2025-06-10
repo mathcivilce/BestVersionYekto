@@ -39,6 +39,7 @@ import Connections from './pages/Connections';
 import Integrations from './pages/Integrations';
 import ReplyTemplates from './pages/ReplyTemplates';
 import TeamManagement from './pages/TeamManagement';
+import StorageDashboard from './pages/StorageDashboard';
 
 // Authentication pages (public routes)
 import Login from './pages/Login';
@@ -83,6 +84,7 @@ function App() {
                   <Route path="integrations" element={<Integrations />} />
                   <Route path="workflows/templates" element={<ReplyTemplates />} />
                   <Route path="team" element={<TeamManagement />} />
+                  <Route path="storage" element={<StorageDashboard />} />
                   <Route path="settings" element={<Settings />} />
                 </Route>
                 

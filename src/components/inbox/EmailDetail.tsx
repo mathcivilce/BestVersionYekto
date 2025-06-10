@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 import CustomerSidebar from '../customer/CustomerSidebar';
 import TemplateSelector from '../email/TemplateSelector';
+import RichTextEditor from '../email/RichTextEditor';
 import EmailPresenceIndicator from '../presence/EmailPresenceIndicator';
 import { useInbox } from '../../contexts/InboxContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -28,6 +29,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [replyMode, setReplyMode] = useState(false);
   const [noteMode, setNoteMode] = useState(false);
   const [replyContent, setReplyContent] = useState('');
+  const [replyAttachments, setReplyAttachments] = useState<any[]>([]);
   const [noteContent, setNoteContent] = useState('');
   const [sending, setSending] = useState(false);
   const [thread, setThread] = useState<any[]>([]);
@@ -222,10 +224,15 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
         if (notesError) throw notesError;
 
-        // If we have notes, fetch the corresponding user profiles
+        // If we have notes or replies, fetch the corresponding user profiles
         let userProfiles: Record<string, any> = {};
-        if (notes && notes.length > 0) {
-          const uniqueUserIds = [...new Set(notes.map(n => n.user_id))];
+        const allUserIds = [
+          ...(notes || []).map(n => n.user_id),
+          ...(replies || []).map(r => r.user_id)
+        ];
+        
+        if (allUserIds.length > 0) {
+          const uniqueUserIds = [...new Set(allUserIds)];
           const { data: profiles, error: profilesError } = await supabase
             .from('user_profiles')
             .select('user_id, first_name, last_name')
@@ -247,11 +254,17 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
             type: 'email',
             timestamp: new Date(e.date).getTime()
           })),
-          ...replies.map((r: any) => ({ 
-            ...r, 
-            type: 'reply',
-            timestamp: new Date(r.sent_at).getTime()
-          })),
+          ...replies.map((r: any) => {
+            const userProfile = userProfiles[r.user_id];
+            return {
+              ...r, 
+              type: 'reply',
+              timestamp: new Date(r.sent_at).getTime(),
+              author: userProfile
+                ? `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'Unknown User'
+                : 'Unknown User'
+            };
+          }),
           ...notes.map((n: any) => {
             const userProfile = userProfiles[n.user_id];
             return {
@@ -313,6 +326,18 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
         throw new Error('Not authenticated');
       }
 
+      // Prepare attachments for backend
+      const processedAttachments = replyAttachments.map(att => ({
+        id: att.id,
+        name: att.name,
+        size: att.size,
+        type: att.type,
+        base64Content: att.base64Content,
+        isInline: att.isInline,
+        contentId: att.contentId,
+        storageStrategy: att.storageStrategy
+      }));
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-email`,
         {
@@ -323,7 +348,8 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
           },
           body: JSON.stringify({
             emailId: emailId,
-            content: replyContent
+            content: replyContent,
+            attachments: processedAttachments
           })
         }
       );
@@ -335,14 +361,21 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
       const { data: reply } = await response.json();
 
+      // Add the current user's name to the reply
+      const authorName = currentUserProfile
+        ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
+        : 'You';
+
       setThread(prev => [...prev, {
         ...reply,
         type: 'reply',
-        timestamp: new Date().getTime()
+        timestamp: new Date().getTime(),
+        author: authorName
       }]);
 
       toast.success('Reply sent successfully');
       setReplyContent('');
+      setReplyAttachments([]);
       setReplyMode(false);
     } catch (err) {
       console.error('Error sending reply:', err);
@@ -561,7 +594,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                 <div>
                   <div className="flex items-center">
                     <span className="font-medium text-gray-900">
-                      {message.type === 'reply' ? 'You' : message.type === 'note' ? message.author : message.from}
+                      {message.type === 'reply' ? message.author : message.type === 'note' ? message.author : message.from}
                     </span>
                     <span className="mx-2 text-gray-500">•</span>
                     <span className="text-sm text-gray-500">
@@ -616,14 +649,17 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                       />
                     </div>
                   )}
-                  <textarea
+                  {/* Replace textarea with RichTextEditor */}
+                  <RichTextEditor
                     value={replyContent}
-                    onChange={(e) => setReplyContent(e.target.value)}
+                    onChange={(content, attachments) => {
+                      setReplyContent(content);
+                      setReplyAttachments(attachments);
+                    }}
                     placeholder="Write your reply..."
-                    className="w-full p-3 text-gray-700 focus:outline-none"
-                    rows={6}
                     disabled={sending}
-                  ></textarea>
+                    showStorageInfo={true}
+                  />
                   
                   <div className="bg-gray-50 px-3 py-2 border-t border-gray-300 flex justify-between items-center">
                     <div className="flex items-center space-x-2">
@@ -640,6 +676,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                         onClick={() => {
                           setReplyMode(false);
                           setReplyContent('');
+                          setReplyAttachments([]);
                         }}
                         className="px-3 py-1.5 text-gray-600 hover:text-gray-900"
                         disabled={sending}
@@ -650,7 +687,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                     
                     <button
                       type="submit"
-                      disabled={sending}
+                      disabled={sending || replyAttachments.some(att => !att.base64Content)}
                       className="px-4 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center disabled:opacity-50"
                     >
                       {sending ? (

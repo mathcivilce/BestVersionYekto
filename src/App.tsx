@@ -38,6 +38,8 @@ import EmailDetails from './pages/EmailDetails';
 import Connections from './pages/Connections';
 import Integrations from './pages/Integrations';
 import ReplyTemplates from './pages/ReplyTemplates';
+import CreateTemplate from './pages/CreateTemplate';
+import EditTemplate from './pages/EditTemplate';
 import TeamManagement from './pages/TeamManagement';
 import StorageDashboard from './pages/StorageDashboard';
 
@@ -83,6 +85,8 @@ function App() {
                   <Route path="connections" element={<Connections />} />
                   <Route path="integrations" element={<Integrations />} />
                   <Route path="workflows/templates" element={<ReplyTemplates />} />
+                  <Route path="workflows/templates/create" element={<CreateTemplate />} />
+                  <Route path="workflows/templates/edit/:templateId" element={<EditTemplate />} />
                   <Route path="team" element={<TeamManagement />} />
                   <Route path="storage" element={<StorageDashboard />} />
                   <Route path="settings" element={<Settings />} />

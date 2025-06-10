@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Pencil, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, Loader2, Search } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -18,14 +19,10 @@ interface Template {
 }
 
 const ReplyTemplates: React.FC = () => {
+  const navigate = useNavigate();
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    content: ''
-  });
+  const [searchQuery, setSearchQuery] = useState('');
   const { user } = useAuth();
 
   useEffect(() => {
@@ -49,68 +46,8 @@ const ReplyTemplates: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!formData.name.trim() || !formData.content.trim()) {
-      toast.error('Please fill in all fields');
-      return;
-    }
-
-    try {
-      if (editingTemplate) {
-        const { error } = await supabase
-          .from('reply_templates')
-          .update({
-            name: formData.name,
-            content: formData.content
-          })
-          .eq('id', editingTemplate.id);
-
-        if (error) throw error;
-        toast.success('Template updated successfully');
-      } else {
-        // Get user's business_id
-        const { data: userProfile, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('business_id')
-          .eq('user_id', user?.id)
-          .single();
-
-        if (profileError || !userProfile?.business_id) {
-          throw new Error('Business information not found. Please contact support.');
-        }
-
-        const { error } = await supabase
-          .from('reply_templates')
-          .insert({
-            name: formData.name,
-            content: formData.content,
-            user_id: user?.id,
-            business_id: userProfile.business_id
-          });
-
-        if (error) throw error;
-        toast.success('Template created successfully');
-      }
-
-      setIsModalOpen(false);
-      setEditingTemplate(null);
-      setFormData({ name: '', content: '' });
-      fetchTemplates();
-    } catch (error) {
-      console.error('Error saving template:', error);
-      toast.error('Failed to save template');
-    }
-  };
-
   const handleEdit = (template: Template) => {
-    setEditingTemplate(template);
-    setFormData({
-      name: template.name,
-      content: template.content
-    });
-    setIsModalOpen(true);
+    navigate(`/workflows/templates/edit/${template.id}`);
   };
 
   const handleDelete = async (id: string) => {
@@ -132,6 +69,17 @@ const ReplyTemplates: React.FC = () => {
     }
   };
 
+  // Filter templates based on search query
+  const filteredTemplates = templates.filter(template => {
+    if (!searchQuery.trim()) return true;
+    
+    const searchLower = searchQuery.toLowerCase();
+    const nameMatch = template.name.toLowerCase().includes(searchLower);
+    const contentMatch = template.content.replace(/<[^>]+>/g, '').toLowerCase().includes(searchLower);
+    
+    return nameMatch || contentMatch;
+  });
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -145,16 +93,26 @@ const ReplyTemplates: React.FC = () => {
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-medium text-gray-900">Reply Templates</h2>
         <button
-          onClick={() => {
-            setEditingTemplate(null);
-            setFormData({ name: '', content: '' });
-            setIsModalOpen(true);
-          }}
+          onClick={() => navigate('/workflows/templates/create')}
           className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
         >
           <Plus size={16} className="mr-2" />
           New Reply Template
         </button>
+      </div>
+
+      {/* Search Bar */}
+      <div className="relative">
+        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+          <Search className="h-5 w-5 text-gray-400" />
+        </div>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+          placeholder="Search templates by name or content..."
+        />
       </div>
 
       {templates.length === 0 ? (
@@ -165,15 +123,25 @@ const ReplyTemplates: React.FC = () => {
           <h3 className="text-lg font-medium text-gray-900 mb-1">No templates yet</h3>
           <p className="text-gray-500 mb-4">Create your first reply template to get started.</p>
           <button
-            onClick={() => {
-              setEditingTemplate(null);
-              setFormData({ name: '', content: '' });
-              setIsModalOpen(true);
-            }}
+            onClick={() => navigate('/workflows/templates/create')}
             className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
           >
             <Plus size={16} className="mr-2" />
             Create First Template
+          </button>
+        </div>
+      ) : filteredTemplates.length === 0 ? (
+        <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
+            <Search className="w-8 h-8 text-gray-400" />
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 mb-1">No templates found</h3>
+          <p className="text-gray-500 mb-4">No templates match your search criteria. Try adjusting your search terms.</p>
+          <button
+            onClick={() => setSearchQuery('')}
+            className="text-blue-600 hover:text-blue-500 text-sm font-medium"
+          >
+            Clear search
           </button>
         </div>
       ) : (
@@ -196,16 +164,17 @@ const ReplyTemplates: React.FC = () => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {templates.map((template) => (
+              {filteredTemplates.map((template) => (
                 <tr key={template.id}>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm font-medium text-gray-900">{template.name}</div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="text-sm text-gray-500">
-                      {template.content.length > 100
-                        ? `${template.content.substring(0, 100)}...`
-                        : template.content}
+                      {/* Strip HTML tags for preview */}
+                      {template.content.replace(/<[^>]+>/g, '').length > 100
+                        ? `${template.content.replace(/<[^>]+>/g, '').substring(0, 100)}...`
+                        : template.content.replace(/<[^>]+>/g, '')}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -229,74 +198,6 @@ const ReplyTemplates: React.FC = () => {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center">
-            <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"></div>
-
-            <div className="relative inline-block bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:max-w-lg sm:w-full">
-              <form onSubmit={handleSubmit}>
-                <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">
-                    {editingTemplate ? 'Edit Template' : 'Create Template'}
-                  </h3>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <label htmlFor="name" className="block text-sm font-medium text-gray-700">
-                        Template Name
-                      </label>
-                      <input
-                        type="text"
-                        id="name"
-                        value={formData.name}
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        className="mt-1 block w-full rounded-md border border-gray-300 py-2 px-3 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor="content" className="block text-sm font-medium text-gray-700">
-                        Template Content
-                      </label>
-                      <textarea
-                        id="content"
-                        value={formData.content}
-                        onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-                        rows={6}
-                        className="mt-1 block w-full rounded-md border border-gray-300 py-2 px-3 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm"
-                        required
-                      ></textarea>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-                  <button
-                    type="submit"
-                    className="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:ml-3 sm:w-auto sm:text-sm"
-                  >
-                    {editingTemplate ? 'Update Template' : 'Create Template'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsModalOpen(false);
-                      setEditingTemplate(null);
-                      setFormData({ name: '', content: '' });
-                    }}
-                    className="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
         </div>
       )}
     </div>

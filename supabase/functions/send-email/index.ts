@@ -85,14 +85,17 @@ serve(async (req) => {
   }
 
   try {
-    // Parse request payload with email ID, content, and attachments
-    const { emailId, content, attachments = [] } = await req.json();
+    // Parse request payload with email ID, content, attachments, and closeTicket option
+    const requestBody = await req.json();
+    const { emailId, content, attachments = [] } = requestBody;
+    const closeTicket = requestBody.closeTicket !== undefined ? requestBody.closeTicket : true;
     
     // 🐛 DEBUG: Log incoming request data
     console.log('=== SEND EMAIL DEBUG START ===');
     console.log('Email ID:', emailId);
     console.log('Content length:', content?.length || 0);
     console.log('Attachments received:', attachments.length);
+    console.log('Close Ticket:', closeTicket);
     console.log('Attachments data:', JSON.stringify(attachments.map(att => ({
       id: att.id,
       name: att.name,
@@ -490,14 +493,24 @@ serve(async (req) => {
       }
     }
 
-    // Update email status after successful send
-    await supabase
-      .from('emails')
-      .update({ 
-        status: 'resolved',
-        read: true
-      })
-      .eq('id', emailId);
+    // Update email status after successful send (only if closeTicket is true)
+    if (closeTicket) {
+      await supabase
+        .from('emails')
+        .update({ 
+          status: 'resolved',
+          read: true
+        })
+        .eq('id', emailId);
+    } else {
+      // Just mark as read without changing status
+      await supabase
+        .from('emails')
+        .update({ 
+          read: true
+        })
+        .eq('id', emailId);
+    }
 
     // Update user storage statistics
     try {

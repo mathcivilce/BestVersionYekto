@@ -37,6 +37,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [showTemplates, setShowTemplates] = useState(false);
   const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
   const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
+
   const navigate = useNavigate();
   const { deleteEmail, markAsRead } = useInbox();
 
@@ -337,6 +338,26 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
     }
   };
 
+  const handleClose = async () => {
+    try {
+      // Update email status to resolved
+      const { error } = await supabase
+        .from('emails')
+        .update({ status: 'resolved' })
+        .eq('id', emailId);
+
+      if (error) {
+        throw error;
+      }
+
+      // Navigate back to inbox
+      onBack();
+    } catch (error) {
+      console.error('Error closing ticket:', error);
+      toast.error('Failed to close ticket');
+    }
+  };
+
   const handleSubmitReply = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -371,39 +392,119 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            emailId: emailId,
-            content: replyContent,
-            attachments: processedAttachments
-          })
-        }
-      );
+                    'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        emailId: emailId,
+        content: replyContent,
+        attachments: processedAttachments,
+        closeTicket: false
+      })
+    }
+  );
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to send reply');
-      }
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to send reply');
+  }
 
-      const { data: reply } = await response.json();
+  const { data: reply } = await response.json();
 
-      // Add the current user's name to the reply
-      const authorName = currentUserProfile
-        ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
-        : 'You';
+  // Add the current user's name to the reply
+  const authorName = currentUserProfile
+    ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
+    : 'You';
 
-      setThread(prev => [...prev, {
-        ...reply,
-        type: 'reply',
-        timestamp: new Date().getTime(),
-        author: authorName
-      }]);
+  setThread(prev => [...prev, {
+    ...reply,
+    type: 'reply',
+    timestamp: new Date().getTime(),
+    author: authorName
+  }]);
 
-      toast.success('Reply sent successfully');
+  toast.success('Reply sent successfully');
       setReplyContent('');
       setReplyAttachments([]);
       setReplyMode(false);
+    } catch (err) {
+      console.error('Error sending reply:', err);
+      toast.error(err.message || 'Failed to send reply');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleSubmitReplyAndClose = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!replyContent.trim()) {
+      toast.error('Please enter a reply message');
+      return;
+    }
+
+    try {
+      setSending(true);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('Not authenticated');
+      }
+
+      // Prepare attachments for backend
+      const processedAttachments = replyAttachments.map(att => ({
+        id: att.id,
+        name: att.name,
+        size: att.size,
+        type: att.type,
+        base64Content: att.base64Content,
+        isInline: att.isInline,
+        contentId: att.contentId,
+        storageStrategy: att.storageStrategy
+      }));
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-email`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+                    'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        emailId: emailId,
+        content: replyContent,
+        attachments: processedAttachments,
+        closeTicket: true
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to send reply');
+  }
+
+  const { data: reply } = await response.json();
+
+  // Add the current user's name to the reply
+  const authorName = currentUserProfile
+    ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
+    : 'You';
+
+  setThread(prev => [...prev, {
+    ...reply,
+    type: 'reply',
+    timestamp: new Date().getTime(),
+    author: authorName
+  }]);
+
+  toast.success('Reply sent and ticket closed');
+      setReplyContent('');
+      setReplyAttachments([]);
+      setReplyMode(false);
+      
+      // Navigate back to inbox
+      onBack();
     } catch (err) {
       console.error('Error sending reply:', err);
       toast.error(err.message || 'Failed to send reply');
@@ -568,12 +669,30 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
       <div className={`flex-1 flex flex-col h-full ${showSidebar ? 'md:mr-64' : ''}`}>
         <div className="bg-white border-b border-gray-200 p-4">
           <div className="flex items-center justify-between mb-4">
-            <button
-              onClick={onBack}
-              className="inline-flex items-center text-gray-600 hover:text-gray-900"
-            >
-              <ChevronLeft size={20} className="mr-1" /> Back to inbox
-            </button>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={onBack}
+                className="inline-flex items-center text-gray-600 hover:text-gray-900"
+              >
+                <ChevronLeft size={20} className="mr-1" /> Back to inbox
+              </button>
+              
+              <button
+                onClick={handleClose}
+                disabled={email.status === 'resolved'}
+                className={`
+                  inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md 
+                  transition-all duration-200 ease-in-out
+                  ${email.status === 'resolved'
+                    ? 'text-gray-700 cursor-not-allowed opacity-75' 
+                    : 'text-gray-700 hover:bg-gray-200 cursor-pointer'
+                  }
+                `}
+                style={{ backgroundColor: '#F3F4F6' }}
+              >
+                {email.status === 'resolved' ? 'Closed' : 'Close'}
+              </button>
+            </div>
             
             <div className="flex items-center space-x-4">
               <EmailAssignmentIndicator 
@@ -701,28 +820,29 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
             )}
 
             {replyMode && (
-              <form onSubmit={handleSubmitReply}>
-                <div className="border border-gray-300 rounded-lg overflow-hidden">
-                  {showTemplates && (
-                    <div className="border-b border-gray-200">
-                      <TemplateSelector
-                        onSelect={handleTemplateSelect}
-                        onClose={() => setShowTemplates(false)}
-                        existingContent={replyContent}
-                      />
-                    </div>
-                  )}
-                  {/* Replace textarea with RichTextEditor */}
-                  <RichTextEditor
-                    value={replyContent}
-                    onChange={(content, attachments) => {
-                      setReplyContent(content);
-                      setReplyAttachments(attachments);
-                    }}
-                    placeholder="Write your reply..."
-                    disabled={sending}
-                    showStorageInfo={true}
-                  />
+              <div className="space-y-0">
+                {showTemplates && (
+                  <div className="border border-gray-300 rounded-t-lg border-b-0 mb-0">
+                    <TemplateSelector
+                      onSelect={handleTemplateSelect}
+                      onClose={() => setShowTemplates(false)}
+                      existingContent={replyContent}
+                    />
+                  </div>
+                )}
+                <form onSubmit={handleSubmitReply}>
+                  <div className={`border border-gray-300 ${showTemplates ? 'rounded-b-lg border-t-0' : 'rounded-lg'} overflow-hidden`}>
+                    {/* Replace textarea with RichTextEditor */}
+                    <RichTextEditor
+                      value={replyContent}
+                      onChange={(content, attachments) => {
+                        setReplyContent(content);
+                        setReplyAttachments(attachments);
+                      }}
+                      placeholder="Write your reply..."
+                      disabled={sending}
+                      showStorageInfo={true}
+                    />
                   
                   <div className="bg-gray-50 px-3 py-2 border-t border-gray-300 flex justify-between items-center">
                     <div className="flex items-center space-x-2">
@@ -748,25 +868,42 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                       </button>
                     </div>
                     
-                    <button
-                      type="submit"
-                      disabled={sending || replyAttachments.some(att => !att.base64Content)}
-                      className="px-4 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center disabled:opacity-50"
-                    >
-                      {sending ? (
-                        <>
-                          <Loader2 size={16} className="mr-2 animate-spin" />
-                          Sending...
-                        </>
-                      ) : (
-                        <>
-                          Send Reply <ArrowRight size={16} className="ml-1" />
-                        </>
-                      )}
-                    </button>
+                    <div className="flex space-x-2">
+                      <button
+                        type="button"
+                        onClick={handleSubmitReplyAndClose}
+                        disabled={sending || replyAttachments.some(att => !att.base64Content)}
+                        className="px-4 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center disabled:opacity-50"
+                      >
+                        {sending ? (
+                          <>
+                            <Loader2 size={16} className="mr-2 animate-spin" />
+                            Sending...
+                          </>
+                        ) : (
+                          'Send & Close'
+                        )}
+                      </button>
+                      
+                      <button
+                        type="submit"
+                        disabled={sending || replyAttachments.some(att => !att.base64Content)}
+                        className="px-4 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center disabled:opacity-50"
+                      >
+                        {sending ? (
+                          <>
+                            <Loader2 size={16} className="mr-2 animate-spin" />
+                            Sending...
+                          </>
+                        ) : (
+                          'Send'
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </form>
+              </div>
             )}
 
             {noteMode && (

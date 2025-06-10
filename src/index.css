@@ -20,3 +20,14 @@
   font-style: normal;
   color: #9ca3af;
 }
+
+/* Ensure template selector doesn't overlap with editor */
+.template-selector-container {
+  position: relative;
+  z-index: 1;
+}
+
+.rich-text-editor-container {
+  position: relative;
+  z-index: 0;
+}

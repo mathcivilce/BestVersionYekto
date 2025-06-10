@@ -215,6 +215,19 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
         if (repliesError) throw repliesError;
 
+        // Fetch attachments for all emails and replies
+        const allMessageIds = [
+          ...threadEmails.map(e => e.id),
+          ...(replies || []).map(r => r.id)
+        ];
+        
+        const { data: attachments, error: attachmentsError } = await supabase
+          .from('email_attachments')
+          .select('*')
+          .in('email_id', allMessageIds);
+
+        if (attachmentsError) throw attachmentsError;
+
         // Fetch internal notes
         const { data: notes, error: notesError } = await supabase
           .from('internal_notes')
@@ -247,12 +260,24 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
           }), {});
         }
 
+        // Create attachment mapping by email_id and content_id
+        const attachmentMap: Record<string, Record<string, any>> = {};
+        (attachments || []).forEach(att => {
+          if (!attachmentMap[att.email_id]) {
+            attachmentMap[att.email_id] = {};
+          }
+          if (att.content_id) {
+            attachmentMap[att.email_id][att.content_id] = att;
+          }
+        });
+
         // Combine and sort all messages by date
         const allMessages = [
           ...threadEmails.map((e: any) => ({ 
             ...e, 
             type: 'email',
-            timestamp: new Date(e.date).getTime()
+            timestamp: new Date(e.date).getTime(),
+            attachments: attachmentMap[e.id] || {}
           })),
           ...replies.map((r: any) => {
             const userProfile = userProfiles[r.user_id];
@@ -262,7 +287,8 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
               timestamp: new Date(r.sent_at).getTime(),
               author: userProfile
                 ? `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'Unknown User'
-                : 'Unknown User'
+                : 'Unknown User',
+              attachments: attachmentMap[r.id] || {}
             };
           }),
           ...notes.map((n: any) => {
@@ -273,7 +299,8 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
               timestamp: new Date(n.created_at).getTime(),
               author: userProfile
                 ? `${userProfile.first_name} ${userProfile.last_name}`.trim() || 'Unknown User'
-                : 'Unknown User'
+                : 'Unknown User',
+              attachments: {}
             };
           })
         ].sort((a, b) => a.timestamp - b.timestamp);
@@ -461,23 +488,59 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
     }
   };
 
-  const renderEmailContent = (content: string) => {
+  const renderEmailContent = (content: string, attachments?: Record<string, any>) => {
     if (!content) return null;
 
     const isHTML = /<[a-z][\s\S]*>/i.test(content);
 
     if (isHTML) {
+      // Process content to handle inline images
+      let processedContent = content;
+      
+      // Replace CID references with actual images if we have the attachment data
+      processedContent = processedContent.replace(
+        /<img[^>]*src=['"]?cid:([^'">\s]+)['"]?[^>]*>/gi,
+        (match, contentId) => {
+          const attachment = attachments?.[contentId];
+          
+          if (attachment && attachment.storage_path) {
+            // Get public URL for the attachment
+            const { data } = supabase.storage
+              .from('email-attachments')
+              .getPublicUrl(attachment.storage_path);
+            
+            if (data?.publicUrl) {
+              const altMatch = match.match(/alt=['"]?([^'"]+)['"]?/i);
+              const classMatch = match.match(/class=['"]?([^'"]+)['"]?/i);
+              const styleMatch = match.match(/style=['"]?([^'"]+)['"]?/i);
+              
+              return `<img src="${data.publicUrl}" alt="${altMatch ? altMatch[1] : attachment.filename}" class="max-w-full h-auto rounded border ${classMatch ? classMatch[1] : ''}" style="max-height: 400px; ${styleMatch ? styleMatch[1] : ''}" />`;
+            }
+          }
+          
+          // Fallback to placeholder
+          const altMatch = match.match(/alt=['"]?([^'"]+)['"]?/i);
+          const fileName = altMatch ? altMatch[1] : (attachment ? attachment.filename : `Image ${contentId}`);
+          return `<div class="inline-flex items-center space-x-2 bg-gray-100 px-3 py-2 rounded border text-sm">
+            <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+            </svg>
+            <span class="text-gray-700">${fileName}</span>
+          </div>`;
+        }
+      );
+
       return (
         <div
           className="prose prose-sm max-w-none text-gray-700"
           dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(content, {
+            __html: DOMPurify.sanitize(processedContent, {
               ALLOWED_TAGS: [
                 'p', 'br', 'strong', 'em', 'u', 'ol', 'ul', 'li', 
-                'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'img',
-                'blockquote', 'pre', 'code', 'div', 'span'
+                'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'img', 'div', 'span', 'svg', 'path',
+                'blockquote', 'pre', 'code'
               ],
-              ALLOWED_ATTR: ['href', 'src', 'alt', 'style', 'class'],
+              ALLOWED_ATTR: ['href', 'src', 'alt', 'style', 'class', 'viewBox', 'fill', 'stroke', 'stroke-linecap', 'stroke-linejoin', 'stroke-width', 'd'],
               ALLOW_DATA_ATTR: false
             })
           }}
@@ -614,7 +677,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                   ? 'bg-yellow-50 border-l-4 border-yellow-200 p-4 rounded'
                   : ''
               }`}>
-                {renderEmailContent(message.content)}
+                {renderEmailContent(message.content, message.attachments)}
               </div>
             </div>
           ))}

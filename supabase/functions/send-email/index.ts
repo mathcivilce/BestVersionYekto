@@ -88,6 +88,23 @@ serve(async (req) => {
     // Parse request payload with email ID, content, and attachments
     const { emailId, content, attachments = [] } = await req.json();
     
+    // 🐛 DEBUG: Log incoming request data
+    console.log('=== SEND EMAIL DEBUG START ===');
+    console.log('Email ID:', emailId);
+    console.log('Content length:', content?.length || 0);
+    console.log('Attachments received:', attachments.length);
+    console.log('Attachments data:', JSON.stringify(attachments.map(att => ({
+      id: att.id,
+      name: att.name,
+      size: att.size,
+      type: att.type,
+      hasBase64: !!att.base64Content,
+      base64Length: att.base64Content?.length || 0,
+      isInline: att.isInline,
+      contentId: att.contentId,
+      storageStrategy: att.storageStrategy
+    })), null, 2));
+    
     // Extract and validate authentication token
     const authHeader = req.headers.get('Authorization')?.split('Bearer ')[1];
     if (!authHeader) {
@@ -143,13 +160,26 @@ serve(async (req) => {
     const processAttachments = async (attachments: Attachment[]): Promise<GraphAttachment[]> => {
       const processedAttachments: GraphAttachment[] = [];
       
+      // 🐛 DEBUG: Log attachment processing start
+      console.log('=== PROCESSING ATTACHMENTS ===');
+      console.log(`Starting to process ${attachments.length} attachments`);
+      
       for (const attachment of attachments) {
         try {
+          console.log(`\nProcessing attachment: ${attachment.name}`);
+          console.log(`  - Size: ${attachment.size} bytes`);
+          console.log(`  - Type: ${attachment.type}`);
+          console.log(`  - Strategy: ${attachment.storageStrategy}`);
+          console.log(`  - Has base64: ${!!attachment.base64Content}`);
+          console.log(`  - Base64 length: ${attachment.base64Content?.length || 0}`);
+          console.log(`  - Is inline: ${attachment.isInline}`);
+          console.log(`  - Content ID: ${attachment.contentId}`);
+          
           let base64Content = attachment.base64Content;
 
           // If attachment uses temp storage, retrieve from Supabase storage
           if (attachment.storageStrategy === 'temp_storage' && !base64Content) {
-            console.log(`Retrieving attachment ${attachment.name} from storage`);
+            console.log(`  - Retrieving from temp storage...`);
             
             // Get storage path from database
             const { data: attachmentRecord, error: attachmentError } = await supabase
@@ -160,20 +190,24 @@ serve(async (req) => {
               .single();
 
             if (attachmentError || !attachmentRecord) {
-              console.error(`Failed to retrieve attachment record: ${attachmentError?.message}`);
+              console.error(`  - ❌ Failed to retrieve attachment record: ${attachmentError?.message}`);
               continue; // Skip this attachment
             }
+
+            console.log(`  - Found DB record: storage_path=${attachmentRecord.storage_path}, has_base64=${!!attachmentRecord.base64_content}`);
 
             // Use base64 backup if available, otherwise download from storage
             if (attachmentRecord.base64_content) {
               base64Content = attachmentRecord.base64_content;
+              console.log(`  - ✅ Using base64 backup from DB`);
             } else if (attachmentRecord.storage_path) {
+              console.log(`  - Downloading from storage path: ${attachmentRecord.storage_path}`);
               const { data: fileData, error: downloadError } = await supabase.storage
                 .from('email-attachments')
                 .download(attachmentRecord.storage_path);
 
               if (downloadError) {
-                console.error(`Failed to download attachment: ${downloadError.message}`);
+                console.error(`  - ❌ Failed to download attachment: ${downloadError.message}`);
                 continue; // Skip this attachment
               }
 
@@ -181,13 +215,18 @@ serve(async (req) => {
               const arrayBuffer = await fileData.arrayBuffer();
               const bytes = new Uint8Array(arrayBuffer);
               base64Content = btoa(String.fromCharCode.apply(null, Array.from(bytes)));
+              console.log(`  - ✅ Downloaded and converted to base64 (${base64Content.length} chars)`);
             }
+          } else {
+            console.log(`  - Using provided base64 content`);
           }
 
           if (!base64Content) {
-            console.error(`No content available for attachment ${attachment.name}`);
+            console.error(`  - ❌ No content available for attachment ${attachment.name}`);
             continue; // Skip attachments without content
           }
+
+          console.log(`  - Final base64 length: ${base64Content.length}`);
 
           // Create Microsoft Graph attachment object
           const graphAttachment: GraphAttachment = {
@@ -201,17 +240,20 @@ serve(async (req) => {
           if (attachment.isInline && attachment.contentId) {
             graphAttachment.contentId = attachment.contentId;
             graphAttachment.isInline = true;
+            console.log(`  - ✅ Added inline properties: contentId=${attachment.contentId}`);
           }
 
           processedAttachments.push(graphAttachment);
-          console.log(`Processed attachment: ${attachment.name} (${attachment.size} bytes)`);
+          console.log(`  - ✅ Successfully processed attachment: ${attachment.name}`);
 
         } catch (error) {
-          console.error(`Error processing attachment ${attachment.name}:`, error);
+          console.error(`  - ❌ Error processing attachment ${attachment.name}:`, error);
           // Continue with other attachments rather than failing the entire email
         }
       }
 
+      console.log(`=== ATTACHMENT PROCESSING COMPLETE ===`);
+      console.log(`Processed ${processedAttachments.length} out of ${attachments.length} attachments`);
       return processedAttachments;
     };
 
@@ -228,10 +270,20 @@ serve(async (req) => {
     const processHtmlContent = (htmlContent: string, attachments: Attachment[]): string => {
       let processedContent = htmlContent;
 
-      // Replace any cid: references that might need formatting fixes
+      // Convert data URLs to CID references for email sending
       attachments.forEach(att => {
         if (att.isInline && att.contentId) {
-          // Ensure proper CID reference format
+          // Replace data URLs with CID references for email
+          const dataUrlPattern = new RegExp(`src=['"]?data:[^'"]+['"]?`, 'g');
+          const cidReference = `src="cid:${att.contentId}"`;
+          
+          // More robust replacement - find images with matching content-id
+          const contentIdPattern = new RegExp(`<img[^>]*data-content-id=['"]${att.contentId}['"][^>]*>`, 'g');
+          processedContent = processedContent.replace(contentIdPattern, (match) => {
+            return match.replace(/src=['"]?data:[^'"]+['"]?/, cidReference);
+          });
+          
+          // Fallback: replace any remaining data URLs for this content ID
           const cidPattern = new RegExp(`(src=['"]?)cid:${att.contentId}(['"]?)`, 'g');
           processedContent = processedContent.replace(cidPattern, `$1cid:${att.contentId}$2`);
         }
@@ -333,12 +385,34 @@ serve(async (req) => {
             saveToSentItems: true
           };
 
+          // 🐛 DEBUG: Log the complete email payload structure
+          console.log('=== MICROSOFT GRAPH EMAIL PAYLOAD ===');
+          console.log('Subject:', emailPayload.message.subject);
+          console.log('To:', emailPayload.message.toRecipients[0].emailAddress.address);
+          console.log('Content Type:', emailPayload.message.body.contentType);
+          console.log('Content Length:', emailPayload.message.body.content.length);
+          console.log('Has Attachments:', !!emailPayload.message.attachments);
+          console.log('Attachments Count:', emailPayload.message.attachments?.length || 0);
+          
+          if (emailPayload.message.attachments && emailPayload.message.attachments.length > 0) {
+            console.log('Attachment Details:');
+            emailPayload.message.attachments.forEach((att, index) => {
+              console.log(`  ${index + 1}. ${att.name}`);
+              console.log(`     - Type: ${att.contentType}`);
+              console.log(`     - Size: ${att.contentBytes?.length || 0} base64 chars`);
+              console.log(`     - Inline: ${att.isInline || false}`);
+              console.log(`     - ContentId: ${att.contentId || 'none'}`);
+            });
+          }
+          console.log('=======================================');
+
           // Send email via Microsoft Graph API
           await graphClient
             .api('/me/sendMail')
             .post(emailPayload);
 
-          console.log(`Email sent successfully with ${graphAttachments.length} attachments`);
+          console.log(`✅ Email sent successfully with ${graphAttachments.length} attachments`);
+          console.log('=== SEND EMAIL DEBUG END ===');
           return; // Exit on successful send
 
         } catch (error: any) {

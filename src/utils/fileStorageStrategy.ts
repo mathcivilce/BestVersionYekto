@@ -3,7 +3,7 @@ export const FILE_STORAGE_CONFIG = {
   DIRECT_BASE64_MAX_SIZE: 2 * 1024 * 1024, // 2MB
   
   // Medium files: Temporary storage with automatic cleanup
-  TEMP_STORAGE_MAX_SIZE: 10 * 1024 * 1024, // 10MB
+  TEMP_STORAGE_MAX_SIZE: 15 * 1024 * 1024, // 15MB (increased for larger images)
   
   // Large files: Not supported (reject to prevent abuse)
   MAX_TOTAL_SIZE: 25 * 1024 * 1024, // 25MB Microsoft Graph limit
@@ -32,7 +32,7 @@ export const FILE_STORAGE_CONFIG = {
   
   // Size limits by type
   MAX_FILE_SIZES: {
-    image: 10 * 1024 * 1024, // 10MB
+    image: 15 * 1024 * 1024, // 15MB (increased for high-res images)
     document: 25 * 1024 * 1024, // 25MB
     video: 100 * 1024 * 1024 // 100MB (would require special handling)
   }
@@ -65,7 +65,7 @@ export const validateFile = (file: File): { valid: boolean; error?: string; stra
 
   // Check file size based on type
   if (fileType.startsWith('image/') && fileSize > FILE_STORAGE_CONFIG.MAX_FILE_SIZES.image) {
-    return { valid: false, error: 'Image file too large (max 10MB)' };
+    return { valid: false, error: 'Image file too large (max 15MB)' };
   }
 
   if (fileType.startsWith('video/') && fileSize > FILE_STORAGE_CONFIG.MAX_FILE_SIZES.video) {

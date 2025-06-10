@@ -115,9 +115,15 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
   // Enhanced file upload with hybrid storage strategy
   const handleFileUpload = useCallback(async (files: File[], isInline = false) => {
     setIsUploading(true);
+    let newAttachments: Attachment[] = [];
     
     try {
-      const newAttachments: Attachment[] = [];
+      // Get current user once at the beginning
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast.error('Authentication required for file upload');
+        return;
+      }
 
       for (const file of files) {
         // Validate file
@@ -145,7 +151,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
         } else if (strategy === 'temp_storage') {
           // Upload to temporary storage with automatic cleanup
           const fileId = generateContentId();
-          const fileName = `temp/${Date.now()}_${sanitizeFileName(file.name)}`;
+          const fileName = `${user.id}/temp_${Date.now()}_${sanitizeFileName(file.name)}`;
           
           const { data, error } = await supabase.storage
             .from('email-attachments')
@@ -179,13 +185,15 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
         newAttachments.push(attachment);
 
-        // For inline images, insert into editor
+        // For inline images, insert into editor with data URL for preview
         if (isInline && file.type.startsWith('image/')) {
           const quill = quillRef.current?.getEditor();
           if (quill) {
             const range = quill.getSelection();
+            // Use data URL for preview in editor, but will convert to CID for email sending
+            const dataUrl = `data:${file.type};base64,${base64Content}`;
             quill.insertEmbed(range?.index || 0, 'customImage', {
-              src: `cid:${contentId}`,
+              src: dataUrl, // Use data URL for browser preview
               alt: file.name,
               contentId
             });
@@ -197,6 +205,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
           await supabase
             .from('email_attachments')
             .insert({
+              user_id: user.id, // Use the user fetched at the beginning
               filename: file.name,
               content_type: file.type,
               file_size: file.size,
@@ -207,7 +216,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
               auto_delete_at: autoDeleteAt?.toISOString()
             });
         } catch (dbError) {
-          console.warn('Failed to track attachment in database (tables may not exist yet):', dbError);
+          console.warn('Failed to track attachment in database:', dbError);
           // Don't fail the upload, just log the warning
         }
       }
@@ -218,19 +227,14 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
       if (newAttachments.length > 0) {
         toast.success(`${newAttachments.length} file(s) uploaded successfully`);
-        
-        // Show cleanup notice for temp storage files
-        const tempFiles = newAttachments.filter(att => att.storageStrategy === 'temp_storage');
-        if (tempFiles.length > 0 && showStorageInfo) {
-          toast.info(`${tempFiles.length} file(s) will be automatically deleted after ${FILE_STORAGE_CONFIG.RETENTION_PERIODS.TEMP_FILES} days`, {
-            duration: 5000
-          });
-        }
       }
 
     } catch (error) {
       console.error('File upload error:', error);
-      toast.error('Failed to upload files');
+      // Only show error toast if no files were uploaded successfully
+      if (newAttachments.length === 0) {
+        toast.error('Failed to upload files');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -542,6 +546,7 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
               </div>
               
               <button
+                type="button"
                 onClick={() => removeAttachment(attachment.id)}
                 className="p-1 text-red-600 hover:text-red-800 hover:bg-red-100 rounded transition-colors"
                 disabled={disabled}

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUp, ArrowDown, Star, Clock, Tag, Inbox, RefreshCw, ArrowLeft, ArrowRight, AlertOctagon } from 'lucide-react';
+import { ArrowUp, ArrowDown, Star, Clock, Tag, Inbox, RefreshCw, ArrowLeft, ArrowRight, AlertOctagon, Search } from 'lucide-react';
 import { useInbox } from '../../contexts/InboxContext';
 import EmailListItem from './EmailListItem';
 import EmailFilter from './EmailFilter';
@@ -27,6 +27,7 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
     from: '',
     to: ''
   });
+  const [searchTerm, setSearchTerm] = useState('');
 
   const store = storeId ? stores.find(s => s.id === storeId) : null;
 
@@ -112,6 +113,18 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
         return emailDate <= toDate;
       }
       return true;
+    })
+    .filter(email => {
+      if (!searchTerm.trim()) return true;
+      
+      const query = searchTerm.toLowerCase();
+      const subject = (email.threadSubject || email.subject || '').toLowerCase();
+      const content = (email.content || email.snippet || '').toLowerCase();
+      const fromEmail = (email.from || '').toLowerCase();
+      
+      return subject.includes(query) || 
+             content.includes(query) || 
+             fromEmail.includes(query);
     })
     .sort((a, b) => {
       if (sortBy === 'date') {
@@ -209,6 +222,8 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
             setSelectedStatus={setSelectedStatus}
             dateRange={dateRange}
             setDateRange={setDateRange}
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
           />
         )}
         <div className="flex-1 flex items-center justify-center p-6 text-center">
@@ -235,6 +250,7 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
                   setSelectedStore('all');
                   setSelectedStatus('all');
                   setDateRange({ from: '', to: '' });
+                  setSearchTerm('');
                 }}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
@@ -257,7 +273,26 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
           setSelectedStatus={setSelectedStatus}
           dateRange={dateRange}
           setDateRange={setDateRange}
+          searchTerm={searchTerm}
+          setSearchTerm={setSearchTerm}
         />
+      )}
+      
+      {storeId && (
+        <div className="border-b border-gray-200 bg-white p-4">
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <Search size={18} className="text-gray-400" />
+            </div>
+            <input
+              type="text"
+              placeholder="Search emails..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+        </div>
       )}
       
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">

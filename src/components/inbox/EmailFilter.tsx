@@ -12,6 +12,8 @@ interface EmailFilterProps {
     to: string;
   };
   setDateRange: (range: { from: string; to: string }) => void;
+  searchTerm: string;
+  setSearchTerm: (term: string) => void;
 }
 
 const EmailFilter: React.FC<EmailFilterProps> = ({
@@ -20,11 +22,12 @@ const EmailFilter: React.FC<EmailFilterProps> = ({
   selectedStatus,
   setSelectedStatus,
   dateRange,
-  setDateRange
+  setDateRange,
+  searchTerm,
+  setSearchTerm
 }) => {
   const { stores, statuses } = useInbox();
   const [isOpen, setIsOpen] = React.useState(false);
-  const [searchTerm, setSearchTerm] = React.useState('');
 
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -38,6 +41,7 @@ const EmailFilter: React.FC<EmailFilterProps> = ({
     setSelectedStore('all');
     setSelectedStatus('all');
     setDateRange({ from: '', to: '' });
+    setSearchTerm('');
     setIsOpen(false);
   };
 
@@ -46,7 +50,8 @@ const EmailFilter: React.FC<EmailFilterProps> = ({
       selectedStore !== 'all',
       selectedStatus !== 'all',
       dateRange.from,
-      dateRange.to
+      dateRange.to,
+      searchTerm.trim()
     ].filter(Boolean).length;
   };
 

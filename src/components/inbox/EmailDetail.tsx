@@ -37,6 +37,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [showTemplates, setShowTemplates] = useState(false);
   const [currentUserProfile, setCurrentUserProfile] = useState<any>(null);
   const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
+  const [currentStore, setCurrentStore] = useState<any>(null);
 
   const navigate = useNavigate();
   const { deleteEmail, markAsRead } = useInbox();
@@ -71,6 +72,28 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
     fetchCurrentUserProfile();
   }, [user?.id]);
+
+  // Fetch current store information
+  useEffect(() => {
+    const fetchCurrentStore = async () => {
+      if (!email?.store_id) return;
+      
+      try {
+        const { data: store, error } = await supabase
+          .from('stores')
+          .select('email, name')
+          .eq('id', email.store_id)
+          .single();
+
+        if (error) throw error;
+        setCurrentStore(store);
+      } catch (error) {
+        console.error('Error fetching current store:', error);
+      }
+    };
+
+    fetchCurrentStore();
+  }, [email?.store_id]);
 
   // Mark email as read when opening it
   useEffect(() => {
@@ -785,7 +808,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                   </div>
                   {index === 0 && message.type === 'email' && (
                     <span className="text-sm text-gray-600 block mt-1">
-                      To: support@yourbusiness.com
+                      To: {currentStore?.email || 'support@yourbusiness.com'}
                     </span>
                   )}
                 </div>

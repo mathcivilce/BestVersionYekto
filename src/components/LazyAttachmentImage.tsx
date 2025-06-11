@@ -7,6 +7,7 @@
  * - Gray placeholder for layout preservation
  * - Shared session management for performance
  * - Cache-aware loading strategies
+ * - Full-size modal view on click
  * - Seamless user experience optimized for modern SaaS standards
  * 
  * Usage:
@@ -18,8 +19,9 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
-import { Loader2, ImageIcon, AlertCircle, Download } from 'lucide-react';
+import { Loader2, ImageIcon, AlertCircle, Download, X } from 'lucide-react';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -92,10 +94,11 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   maxHeight = 400
 }) => {
   const [loadingState, setLoadingState] = useState<LoadingState>({ status: 'idle' });
-  const [imageSrc, setImageSrc] = useState<string>('');
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
-  const abortController = useRef<AbortController | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const spinnerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Effect to start loading when component mounts or props change
@@ -109,8 +112,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
 
     // Cleanup function to cancel ongoing requests and timeouts
     return () => {
-      if (abortController.current) {
-        abortController.current.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
       if (spinnerTimeoutRef.current) {
         clearTimeout(spinnerTimeoutRef.current);
@@ -123,14 +126,14 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       setLoadingState({ status: 'loading', showSpinner: false });
 
       // Cancel any existing request and timeout
-      if (abortController.current) {
-        abortController.current.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
       if (spinnerTimeoutRef.current) {
         clearTimeout(spinnerTimeoutRef.current);
       }
       
-      abortController.current = new AbortController();
+      abortControllerRef.current = new AbortController();
 
       // Set up delayed spinner with shorter delay for better UX
       spinnerTimeoutRef.current = setTimeout(() => {
@@ -170,7 +173,7 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       const response = await fetch(url, {
         method: 'GET',
         headers,
-        signal: abortController.current.signal
+        signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) {
@@ -273,6 +276,27 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
     };
   };
 
+  const handleImageClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (onClick) {
+      onClick();
+    } else {
+      setIsModalOpen(true);
+    }
+  };
+
+  const handleDownloadClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleDownload();
+  };
+
+  const handleModalClose = () => {
+    setIsModalOpen(false);
+  };
+
   const handleDownload = async () => {
     if (!imageSrc) return;
     
@@ -295,67 +319,169 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
 
   const displaySize = calculateDisplaySize();
 
+  // Image Modal Component - renders at the document root level using Portal
+  const ImageModal = () => {
+    if (!isModalOpen || !imageSrc) return null;
+
+    const modalContent = (
+      <div 
+        className="fixed inset-0 bg-black bg-opacity-95 flex items-center justify-center"
+        style={{ 
+          zIndex: 999999,
+          margin: 0, 
+          padding: 0,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          position: 'fixed'
+        }}
+      >
+        {/* Close button */}
+        <button
+          onClick={handleModalClose}
+          className="absolute top-6 right-6 p-3 bg-white/20 text-white rounded-full hover:bg-white/30 transition-colors"
+          style={{ zIndex: 1000000 }}
+          title="Close (ESC)"
+        >
+          <X className="w-6 h-6" />
+        </button>
+
+        {/* Download button in modal */}
+        {showDownloadButton && (
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleDownload();
+            }}
+            className="absolute top-6 left-6 p-3 bg-white/20 text-white rounded-full hover:bg-white/30 transition-colors"
+            style={{ zIndex: 1000000 }}
+            title="Download attachment"
+          >
+            <Download className="w-6 h-6" />
+          </button>
+        )}
+
+        {/* Backdrop click to close */}
+        <div 
+          className="absolute inset-0 cursor-pointer" 
+          onClick={handleModalClose}
+        />
+
+        {/* Image container - centered and responsive */}
+        <div className="relative flex items-center justify-center w-full h-full p-8">
+          <img
+            src={imageSrc}
+            alt={alt}
+            className="max-w-full max-h-full object-contain"
+            style={{
+              maxWidth: 'calc(100vw - 4rem)',
+              maxHeight: 'calc(100vh - 4rem)',
+              borderRadius: '8px'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      </div>
+    );
+
+    // Render modal using Portal at document.body level
+    return createPortal(modalContent, document.body);
+  };
+
+  // Handle ESC key to close modal - moved outside of modal component
+  useEffect(() => {
+    if (!isModalOpen) return;
+
+    const handleEscKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleModalClose();
+      }
+    };
+
+    // Prevent body scroll when modal is open
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleEscKey);
+    
+    return () => {
+      document.body.style.overflow = 'unset';
+      document.removeEventListener('keydown', handleEscKey);
+    };
+  }, [isModalOpen]);
+
   // Render based on loading state
   switch (loadingState.status) {
     case 'idle':
     case 'loading':
       return (
-        <div 
-          className={`relative flex items-center justify-center bg-gray-100 border border-gray-200 rounded-lg overflow-hidden ${className}`}
-          style={{ 
-            width: displaySize.width, 
-            height: displaySize.height, 
-            minWidth: '120px', 
-            minHeight: '80px',
-            ...style 
-          }}
-        >
-          {/* Gray placeholder for layout preservation */}
-          <div className="absolute inset-0 bg-gradient-to-br from-gray-50 to-gray-100" />
+        <>
+          <div 
+            className={`relative flex items-center justify-center bg-gray-100 border border-gray-200 rounded-lg overflow-hidden ${className}`}
+            style={{ 
+              width: displaySize.width, 
+              height: displaySize.height, 
+              minWidth: '120px', 
+              minHeight: '80px',
+              ...style 
+            }}
+          >
+            {/* Gray placeholder for layout preservation */}
+            <div className="absolute inset-0 bg-gradient-to-br from-gray-50 to-gray-100" />
+            
+            {/* Only show spinner after delay - now smaller and more subtle */}
+            {loadingState.showSpinner && (
+              <div className="relative z-10 flex items-center justify-center">
+                <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
+                {/* Removed text and cache info for cleaner look */}
+              </div>
+            )}
+          </div>
           
-          {/* Only show spinner after delay - now smaller and more subtle */}
-          {loadingState.showSpinner && (
-            <div className="relative z-10 flex items-center justify-center">
-              <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
-              {/* Removed text and cache info for cleaner look */}
-            </div>
-          )}
-        </div>
+          {/* Portal-based modal */}
+          <ImageModal />
+        </>
       );
 
     case 'loaded':
       return (
-        <div className={`relative ${className}`} style={style}>
-          <img
-            ref={imgRef}
-            src={imageSrc}
-            alt={alt}
-            style={{
-              ...displaySize,
-              objectFit: 'contain'
-            }}
-            className="rounded-lg shadow-sm cursor-pointer hover:shadow-md transition-shadow"
-            onClick={onClick}
-          />
-          
-          {/* Download button */}
-          {showDownloadButton && (
-            <button
-              onClick={handleDownload}
-              className="absolute bottom-2 right-2 p-2 bg-black/70 text-white rounded-full hover:bg-black/80 transition-colors"
-              title="Download attachment"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-          )}
-          
-          {/* Cache level indicator (subtle, dev-friendly) */}
-          {loadingState.cacheLevel && process.env.NODE_ENV === 'development' && (
-            <div className="absolute top-1 left-1 px-1 py-0.5 bg-black/50 text-white text-xs rounded">
-              {loadingState.cacheLevel}
-            </div>
-          )}
-        </div>
+        <>
+          <div className={`relative inline-block ${className}`} style={style}>
+            <img
+              ref={imgRef}
+              src={imageSrc}
+              alt={alt}
+              style={{
+                ...displaySize,
+                objectFit: 'contain'
+              }}
+              className="rounded-lg shadow-sm cursor-pointer hover:shadow-md transition-shadow block"
+              onClick={handleImageClick}
+              onDragStart={(e) => e.preventDefault()}
+            />
+            
+            {/* Download button - positioned in bottom-left corner */}
+            {showDownloadButton && (
+              <button
+                onClick={handleDownloadClick}
+                className="absolute bottom-2 left-2 p-2 bg-black/70 text-white rounded-full hover:bg-black/80 transition-colors z-10"
+                title="Download attachment"
+              >
+                <Download className="w-4 h-4" />
+              </button>
+            )}
+            
+            {/* Cache level indicator (subtle, dev-friendly) */}
+            {loadingState.cacheLevel && process.env.NODE_ENV === 'development' && (
+              <div className="absolute top-1 right-1 px-1 py-0.5 bg-black/50 text-white text-xs rounded">
+                {loadingState.cacheLevel}
+              </div>
+            )}
+          </div>
+
+          {/* Portal-based modal */}
+          <ImageModal />
+        </>
       );
 
     case 'not-found':

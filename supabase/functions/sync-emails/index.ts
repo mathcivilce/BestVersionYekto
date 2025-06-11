@@ -24,6 +24,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 import { Client } from "npm:@microsoft/microsoft-graph-client";
+import { 
+  createEmailProvider, 
+  getProviderTypeFromPlatform, 
+  AttachmentProcessor 
+} from "../_shared/email-providers.ts";
 
 // CORS headers for cross-origin requests
 const corsHeaders = {
@@ -313,10 +318,17 @@ serve(async (req) => {
 
     // Process and save emails if any were collected
     if (allEmails.length > 0) {
-      // Transform Graph API email objects to database format with universal threading
-      const emailsToSave = [];
-      
-      for (const msg of allEmails) {
+              // Transform Graph API email objects to database format with universal threading
+        const emailsToSave = [];
+        
+        // Set up global supabase client for provider status updates
+        (globalThis as any).supabaseClient = supabase;
+        
+        // Create email provider for attachment metadata extraction
+        const providerType = getProviderTypeFromPlatform(store.platform || 'outlook');
+        const emailProvider = createEmailProvider(providerType, store.id, accessToken);
+        
+        for (const msg of allEmails) {
         // Extract recipient emails for threading context
         const toEmails = msg.toRecipients?.map((r: any) => r.emailAddress?.address).filter(Boolean).join(',') || '';
         
@@ -342,8 +354,46 @@ serve(async (req) => {
 
         const universalThreadId = threadResult || msg.message_id_header || msg.microsoft_conversation_id || msg.conversationId;
 
+        // 🎯 SMART REFERENCE ARCHITECTURE: Extract attachment metadata for emails with attachments
+        let attachmentCount = 0;
+        const emailId = crypto.randomUUID(); // Generate email ID for attachment linking
+        
+        if (msg.hasAttachments || msg.has_attachments) {
+          try {
+            // Extract attachment metadata (not content - just metadata!)
+            const attachmentMetadata = await emailProvider.extractAttachmentMetadata(msg.id);
+            
+            if (attachmentMetadata && attachmentMetadata.length > 0) {
+              console.log(`Found ${attachmentMetadata.length} attachments for email ${msg.id}`);
+              
+              // Extract content IDs from email HTML to link with attachments
+              const contentIds = AttachmentProcessor.extractContentIdFromHtml(msg.body?.content || '');
+              
+              // Link content IDs to attachments for inline image detection
+              const linkedAttachments = await AttachmentProcessor.linkContentIdsToAttachments(
+                contentIds, 
+                attachmentMetadata
+              );
+              
+              // Process attachment metadata after email is created
+              await AttachmentProcessor.processAttachmentMetadata(
+                linkedAttachments,
+                emailId,
+                store.user_id,
+                supabase
+              );
+              
+              attachmentCount = linkedAttachments.length;
+              console.log(`Processed ${attachmentCount} attachment references for email ${msg.id}`);
+            }
+          } catch (attachmentError) {
+            console.error('Error processing attachments for email (non-fatal):', msg.id, attachmentError);
+            // Don't fail email processing if attachment extraction fails
+          }
+        }
+
         emailsToSave.push({
-          id: crypto.randomUUID(),
+          id: emailId, // Use generated ID for attachment linking
           graph_id: msg.id,
           thread_id: universalThreadId, // Universal thread ID using RFC2822 standards
           parent_id: null,
@@ -360,7 +410,8 @@ serve(async (req) => {
           internet_message_id: msg.internetMessageId,
           // Enhanced metadata storage
           microsoft_conversation_id: msg.microsoft_conversation_id || msg.conversationId,
-          has_attachments: msg.has_attachments || msg.hasAttachments || false,
+          has_attachments: attachmentCount > 0, // Smart Reference Architecture: use actual attachment count
+          attachment_reference_count: attachmentCount, // Smart Reference Architecture: count for UI
           // Universal threading headers
           message_id_header: msg.message_id_header,
           in_reply_to_header: msg.in_reply_to_header,

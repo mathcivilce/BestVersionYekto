@@ -36,10 +36,10 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { PublicClientApplication, InteractionRequiredAuthError, Configuration, AccountInfo } from '@azure/msal-browser';
 import { Client } from '@microsoft/microsoft-graph-client';
 import { Message } from '@microsoft/microsoft-graph-types';
-import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 import { useAuth } from './AuthContext';
 import { TokenManager } from '../utils/tokenManager';
+import { supabase } from '../config/supabase';
 
 /**
  * Email data structure
@@ -203,11 +203,7 @@ const initializeMsal = async () => {
   return msalInstance;
 };
 
-// Initialize Supabase client for database operations
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-);
+// Using shared Supabase client from config
 
 /**
  * Inbox Provider Component

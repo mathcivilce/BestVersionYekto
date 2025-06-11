@@ -21,25 +21,25 @@ export interface StorageStats {
 export interface Attachment {
   id: string;
   filename: string;
-  contentType: string;
-  fileSize: number;
-  isInline: boolean;
-  storageStrategy: 'base64' | 'temp_storage';
-  autoDeleteAt: string | null;
-  createdAt: string;
+  content_type: string;
+  file_size: number;
+  is_inline: boolean;
+  storage_strategy: 'base64' | 'temp_storage';
+  auto_delete_at: string | null;
+  created_at: string;
   processed: boolean;
-  storagePath?: string;
+  storage_path?: string;
 }
 
 export interface CleanupLog {
   id: string;
-  cleanupType: string;
-  filesDeleted: number;
-  storageFreedBytes: number;
-  executionTimeMs: number;
+  cleanup_type: string;
+  files_deleted: number;
+  storage_freed_bytes: number;
+  execution_time_ms: number;
   success: boolean;
-  executedAt: string;
-  errorMessage?: string;
+  executed_at: string;
+  error_message?: string;
 }
 
 export interface SystemHealth {

@@ -17,12 +17,12 @@ import { formatFileSize } from '../../utils/fileStorageStrategy';
 interface Attachment {
   id: string;
   filename: string;
-  contentType: string;
-  fileSize: number;
-  isInline: boolean;
-  storageStrategy: 'base64' | 'temp_storage';
-  autoDeleteAt: string | null;
-  createdAt: string;
+  content_type: string;
+  file_size: number;
+  is_inline: boolean;
+  storage_strategy: 'base64' | 'temp_storage';
+  auto_delete_at: string | null;
+  created_at: string;
   processed: boolean;
 }
 
@@ -44,11 +44,11 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
   // Filter and sort attachments
   const filteredAttachments = attachments
     .filter(attachment => {
-      const matchesSearch = attachment.filename.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = attachment.filename?.toLowerCase().includes(searchTerm.toLowerCase()) || false;
       
       if (filterType === 'all') return matchesSearch;
       
-      const type = attachment.contentType;
+      const type = attachment.content_type || '';
       if (filterType === 'images') return matchesSearch && type.startsWith('image/');
       if (filterType === 'videos') return matchesSearch && type.startsWith('video/');
       if (filterType === 'documents') return matchesSearch && (
@@ -61,16 +61,17 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
       return matchesSearch;
     })
     .sort((a, b) => {
-      if (sortBy === 'date') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      if (sortBy === 'size') return b.fileSize - a.fileSize;
-      if (sortBy === 'name') return a.filename.localeCompare(b.filename);
+      if (sortBy === 'date') return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+      if (sortBy === 'size') return (b.file_size || 0) - (a.file_size || 0);
+      if (sortBy === 'name') return (a.filename || '').localeCompare(b.filename || '');
       return 0;
     });
 
   const getFileIcon = (contentType: string, isInline: boolean) => {
-    if (contentType.startsWith('image/')) return <Image className="h-4 w-4 text-blue-500" />;
-    if (contentType.startsWith('video/')) return <Video className="h-4 w-4 text-red-500" />;
-    if (contentType.includes('pdf') || contentType.includes('document')) return <FileText className="h-4 w-4 text-green-500" />;
+    const type = contentType || '';
+    if (type.startsWith('image/')) return <Image className="h-4 w-4 text-blue-500" />;
+    if (type.startsWith('video/')) return <Video className="h-4 w-4 text-red-500" />;
+    if (type.includes('pdf') || type.includes('document')) return <FileText className="h-4 w-4 text-green-500" />;
     return <Paperclip className="h-4 w-4 text-gray-500" />;
   };
 
@@ -78,7 +79,7 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
     if (!attachment.processed) {
       return <span className="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded-full">Pending</span>;
     }
-    if (attachment.autoDeleteAt && new Date(attachment.autoDeleteAt) < new Date()) {
+    if (attachment.auto_delete_at && new Date(attachment.auto_delete_at) < new Date()) {
       return <span className="px-2 py-1 text-xs bg-red-100 text-red-800 rounded-full">Expired</span>;
     }
     return <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">Active</span>;
@@ -155,16 +156,16 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
                   <div className="flex items-center space-x-4 flex-1 min-w-0">
                     {/* File Icon */}
                     <div className="flex-shrink-0">
-                      {getFileIcon(attachment.contentType, attachment.isInline)}
+                      {getFileIcon(attachment.content_type, attachment.is_inline)}
                     </div>
 
                     {/* File Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center space-x-2 mb-1">
                         <h4 className="text-sm font-medium text-gray-900 truncate">
-                          {attachment.filename}
+                          {attachment.filename || 'Unknown file'}
                         </h4>
-                        {attachment.isInline && (
+                        {attachment.is_inline && (
                           <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
                             Inline
                           </span>
@@ -173,20 +174,20 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
                       </div>
                       
                       <div className="flex items-center space-x-4 text-sm text-gray-500">
-                        <span>{formatFileSize(attachment.fileSize)}</span>
+                        <span>{formatFileSize(attachment.file_size || 0)}</span>
                         <span>•</span>
-                        <span className="capitalize">{attachment.storageStrategy.replace('_', ' ')}</span>
+                        <span className="capitalize">{(attachment.storage_strategy || 'unknown').replace('_', ' ')}</span>
                         <span>•</span>
                         <span className="flex items-center">
                           <Calendar className="h-3 w-3 mr-1" />
-                          {new Date(attachment.createdAt).toLocaleDateString()}
+                          {attachment.created_at ? new Date(attachment.created_at).toLocaleDateString() : 'Unknown date'}
                         </span>
-                        {attachment.autoDeleteAt && (
+                        {attachment.auto_delete_at && (
                           <>
                             <span>•</span>
                             <span className="flex items-center text-orange-600">
                               <Clock className="h-3 w-3 mr-1" />
-                              Expires {new Date(attachment.autoDeleteAt).toLocaleDateString()}
+                              Expires {new Date(attachment.auto_delete_at).toLocaleDateString()}
                             </span>
                           </>
                         )}
@@ -230,7 +231,7 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
           <div className="text-sm text-gray-500">Total Size</div>
           <div className="text-xl font-semibold text-gray-900">
-            {formatFileSize(filteredAttachments.reduce((sum, att) => sum + att.fileSize, 0))}
+            {formatFileSize(filteredAttachments.reduce((sum, att) => sum + (att.file_size || 0), 0))}
           </div>
         </div>
         
@@ -245,8 +246,8 @@ const AttachmentsTab: React.FC<AttachmentsTabProps> = ({
           <div className="text-sm text-gray-500">Expiring Soon</div>
           <div className="text-xl font-semibold text-gray-900">
             {filteredAttachments.filter(att => 
-              att.autoDeleteAt && 
-              new Date(att.autoDeleteAt).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
+              att.auto_delete_at && 
+              new Date(att.auto_delete_at).getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000
             ).length}
           </div>
         </div>

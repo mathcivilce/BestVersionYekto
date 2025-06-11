@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Star, Tag, Clock, User, Edit2, ArrowRight, Trash2, Loader2, StickyNote } from 'lucide-react';
-import DOMPurify from 'dompurify';
 import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 import CustomerSidebar from '../customer/CustomerSidebar';
@@ -12,6 +11,7 @@ import { useInbox } from '../../contexts/InboxContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getThreadSubject } from '../../utils/email';
 import EmailAssignmentIndicator from '../assignment/EmailAssignmentIndicator';
+import EmailContentWithAttachments from '../EmailContentWithAttachments';
 
 interface EmailDetailProps {
   email: any;
@@ -615,67 +615,12 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const renderEmailContent = (content: string, attachments?: Record<string, any>) => {
     if (!content) return null;
 
-    const isHTML = /<[a-z][\s\S]*>/i.test(content);
-
-    if (isHTML) {
-      // Process content to handle inline images
-      let processedContent = content;
-      
-      // Replace CID references with actual images if we have the attachment data
-      processedContent = processedContent.replace(
-        /<img[^>]*src=['"]?cid:([^'">\s]+)['"]?[^>]*>/gi,
-        (match, contentId) => {
-          const attachment = attachments?.[contentId];
-          
-          if (attachment && attachment.storage_path) {
-            // Get public URL for the attachment
-            const { data } = supabase.storage
-              .from('email-attachments')
-              .getPublicUrl(attachment.storage_path);
-            
-            if (data?.publicUrl) {
-              const altMatch = match.match(/alt=['"]?([^'"]+)['"]?/i);
-              const classMatch = match.match(/class=['"]?([^'"]+)['"]?/i);
-              const styleMatch = match.match(/style=['"]?([^'"]+)['"]?/i);
-              
-              return `<img src="${data.publicUrl}" alt="${altMatch ? altMatch[1] : attachment.filename}" class="max-w-full h-auto rounded border ${classMatch ? classMatch[1] : ''}" style="max-height: 400px; ${styleMatch ? styleMatch[1] : ''}" />`;
-            }
-          }
-          
-          // Fallback to placeholder
-          const altMatch = match.match(/alt=['"]?([^'"]+)['"]?/i);
-          const fileName = altMatch ? altMatch[1] : (attachment ? attachment.filename : `Image ${contentId}`);
-          return `<div class="inline-flex items-center space-x-2 bg-gray-100 px-3 py-2 rounded border text-sm">
-            <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-            </svg>
-            <span class="text-gray-700">${fileName}</span>
-          </div>`;
-        }
-      );
-
-      return (
-        <div
-          className="prose prose-sm max-w-none text-gray-700"
-          dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(processedContent, {
-              ALLOWED_TAGS: [
-                'p', 'br', 'strong', 'em', 'u', 'ol', 'ul', 'li', 
-                'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'img', 'div', 'span', 'svg', 'path',
-                'blockquote', 'pre', 'code'
-              ],
-              ALLOWED_ATTR: ['href', 'src', 'alt', 'style', 'class', 'viewBox', 'fill', 'stroke', 'stroke-linecap', 'stroke-linejoin', 'stroke-width', 'd'],
-              ALLOW_DATA_ATTR: false
-            })
-          }}
-        />
-      );
-    }
-
     return (
-      <div className="whitespace-pre-wrap text-gray-700">
-        {content}
-      </div>
+      <EmailContentWithAttachments 
+        htmlContent={content}
+        emailId={emailId}
+        className="prose prose-sm max-w-none text-gray-700"
+      />
     );
   };
 

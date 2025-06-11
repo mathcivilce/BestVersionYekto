@@ -17,34 +17,30 @@ import {
   Loader2,
   RefreshCw
 } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
 import { toast } from 'react-hot-toast';
 import { formatFileSize } from '../../utils/fileStorageStrategy';
 import AttachmentsTab from './AttachmentsTab';
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-);
+import { supabase } from '../../config/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface StorageStats {
-  totalAttachments: number;
-  totalStorageBytes: number;
-  tempStorageBytes: number;
-  currentMonthUploads: number;
-  currentMonthBytes: number;
-  lastCalculatedAt: string;
+  total_attachments: number;
+  total_storage_bytes: number;
+  temp_storage_bytes: number;
+  current_month_uploads: number;
+  current_month_bytes: number;
+  last_calculated_at: string;
 }
 
 interface Attachment {
   id: string;
   filename: string;
-  contentType: string;
-  fileSize: number;
-  isInline: boolean;
-  storageStrategy: 'base64' | 'temp_storage';
-  autoDeleteAt: string | null;
-  createdAt: string;
+  content_type: string;
+  file_size: number;
+  is_inline: boolean;
+  storage_strategy: 'base64' | 'temp_storage';
+  auto_delete_at: string | null;
+  created_at: string;
   processed: boolean;
 }
 
@@ -67,32 +63,171 @@ interface RetentionPolicy {
 }
 
 const StorageUsageDashboard: React.FC = () => {
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<'overview' | 'attachments' | 'cleanup' | 'settings'>('overview');
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [cleanupLogs, setCleanupLogs] = useState<CleanupLog[]>([]);
   const [retentionPolicies, setRetentionPolicies] = useState<RetentionPolicy[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'attachments' | 'cleanup' | 'settings'>('overview');
   const [refreshing, setRefreshing] = useState(false);
 
   // Load dashboard data
   const loadDashboardData = async () => {
+    console.log('StorageUsageDashboard: loadDashboardData called, user:', user);
+    
+    if (!user) {
+      console.log('No authenticated user, skipping data load');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     try {
-      const [statsResponse, attachmentsResponse, logsResponse, policiesResponse] = await Promise.all([
-        supabase.from('storage_usage').select('*').single(),
-        supabase.from('email_attachments').select('*').order('created_at', { ascending: false }).limit(50),
-        supabase.from('cleanup_logs').select('*').order('executed_at', { ascending: false }).limit(20),
-        supabase.from('retention_policies').select('*').order('policy_name')
+      console.log('StorageUsageDashboard: Starting data load for user:', user.id);
+
+      // Check and refresh session if needed
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (!session && !sessionError) {
+        console.log('No valid session found, attempting to refresh...');
+        const { data: refreshData } = await supabase.auth.refreshSession();
+        if (refreshData?.session) {
+          console.log('Session refreshed successfully');
+        } else {
+          console.warn('Could not refresh session, but continuing with user context');
+        }
+      }
+
+      // First, ensure storage usage is calculated for this user
+      const { error: updateError } = await supabase.rpc('update_storage_usage', { 
+        p_user_id: user.id 
+      });
+
+      if (updateError) {
+        console.warn('Failed to update storage usage:', updateError);
+      }
+
+      console.log('StorageUsageDashboard: Fetching data from database...');
+
+      // Fetch data using RPC function for attachments to bypass RLS issues
+      const [statsResponse, attachmentsResponse] = await Promise.all([
+        // Get storage_usage for current month
+        supabase
+          .from('storage_usage')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('month_year', new Date().toISOString().substring(0, 7))
+          .maybeSingle(),
+        
+        // Get all attachments using RPC function (bypasses RLS)
+        supabase.rpc('get_user_attachments', { 
+          p_user_id: user.id,
+          p_limit: 100 
+        })
       ]);
 
-      if (statsResponse.data) setStorageStats(statsResponse.data);
-      if (attachmentsResponse.data) setAttachments(attachmentsResponse.data);
-      if (logsResponse.data) setCleanupLogs(logsResponse.data);
-      if (policiesResponse.data) setRetentionPolicies(policiesResponse.data);
+      console.log('StorageUsageDashboard: Database responses received');
+      console.log('Storage stats response:', statsResponse);
+      console.log('Attachments response:', attachmentsResponse);
+
+      // Handle storage stats - create default if none exists
+      if (statsResponse.data) {
+        console.log('StorageUsageDashboard: Found storage stats:', statsResponse.data);
+        setStorageStats(statsResponse.data);
+      } else {
+        console.log('StorageUsageDashboard: No storage stats found, creating default');
+        // No storage usage record exists, create a default one
+        const defaultStats: StorageStats = {
+          total_attachments: 0,
+          total_storage_bytes: 0,
+          temp_storage_bytes: 0,
+          current_month_uploads: 0,
+          current_month_bytes: 0,
+          last_calculated_at: new Date().toISOString()
+        };
+        setStorageStats(defaultStats);
+      }
+
+      // Process attachments from RPC response
+      let allAttachments: Attachment[] = [];
+
+      if (attachmentsResponse.data && attachmentsResponse.data.length > 0) {
+        // Normalize the RPC response to match our Attachment interface
+        allAttachments = attachmentsResponse.data.map(att => ({
+          id: att.id,
+          filename: att.filename,
+          content_type: att.content_type,
+          file_size: att.file_size,
+          is_inline: att.is_inline || false,
+          storage_strategy: att.storage_strategy as 'base64' | 'temp_storage',
+          auto_delete_at: att.auto_delete_at,
+          created_at: att.created_at,
+          processed: att.processed || true
+        }));
+        
+        console.log('StorageUsageDashboard: Loaded', allAttachments.length, 'total attachments via RPC');
+      } else {
+        console.log('StorageUsageDashboard: No attachments found via RPC');
+        if (attachmentsResponse.error) {
+          console.error('Attachments RPC error:', attachmentsResponse.error);
+        }
+      }
+
+      console.log('StorageUsageDashboard: Total attachments loaded:', allAttachments.length);
+      setAttachments(allAttachments);
+
+      // Try to load admin-only data but don't fail if not accessible
+      try {
+        const [logsResponse, policiesResponse] = await Promise.all([
+          supabase
+            .from('cleanup_logs')
+            .select('*')
+            .order('executed_at', { ascending: false })
+            .limit(20),
+          
+          supabase
+            .from('retention_policies')
+            .select('*')
+            .order('policy_name')
+        ]);
+
+        if (logsResponse.data) {
+          setCleanupLogs(logsResponse.data);
+        } else {
+          setCleanupLogs([]);
+        }
+
+        if (policiesResponse.data) {
+          setRetentionPolicies(policiesResponse.data);
+        } else {
+          setRetentionPolicies([]);
+        }
+      } catch (adminError) {
+        console.log('Admin-only data not accessible:', adminError);
+        setCleanupLogs([]);
+        setRetentionPolicies([]);
+      }
 
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
-      toast.error('Failed to load storage data');
+      
+      // Don't show error toast for authentication issues, just log them
+      if (error?.code !== 'PGRST301') {
+        toast.error('Failed to load dashboard data');
+      }
+      
+      // Set default empty data on error
+      setStorageStats({
+        total_attachments: 0,
+        total_storage_bytes: 0,
+        temp_storage_bytes: 0,
+        current_month_uploads: 0,
+        current_month_bytes: 0,
+        last_calculated_at: new Date().toISOString()
+      });
+      setAttachments([]);
+      setCleanupLogs([]);
+      setRetentionPolicies([]);
     } finally {
       setLoading(false);
     }
@@ -100,10 +235,15 @@ const StorageUsageDashboard: React.FC = () => {
 
   // Refresh storage stats
   const refreshStorageStats = async () => {
+    if (!user) {
+      toast.error('User not authenticated');
+      return;
+    }
+
     setRefreshing(true);
     try {
       const { data, error } = await supabase.rpc('update_storage_usage', {
-        p_user_id: (await supabase.auth.getUser()).data.user?.id
+        p_user_id: user.id
       });
 
       if (error) throw error;
@@ -140,6 +280,11 @@ const StorageUsageDashboard: React.FC = () => {
 
   // Remove attachment
   const removeAttachment = async (attachmentId: string) => {
+    if (!user) {
+      toast.error('User not authenticated');
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('email_attachments')
@@ -156,26 +301,27 @@ const StorageUsageDashboard: React.FC = () => {
     }
   };
 
+  // Load data when component mounts or user changes
   useEffect(() => {
     loadDashboardData();
-  }, []);
+  }, [user]); // Only depend on user changes
 
   // Storage usage calculations
   const storageMetrics = useMemo(() => {
     if (!storageStats) return null;
 
     const maxStorage = 1024 * 1024 * 1024; // 1GB default quota
-    const usagePercentage = (storageStats.totalStorageBytes / maxStorage) * 100;
-    const tempPercentage = (storageStats.tempStorageBytes / storageStats.totalStorageBytes) * 100;
+    const usagePercentage = (storageStats.total_storage_bytes / maxStorage) * 100;
+    const tempPercentage = (storageStats.temp_storage_bytes / storageStats.total_storage_bytes) * 100;
 
     return {
-      totalUsage: formatFileSize(storageStats.totalStorageBytes),
+      totalUsage: formatFileSize(storageStats.total_storage_bytes),
       maxStorage: formatFileSize(maxStorage),
       usagePercentage: Math.min(usagePercentage, 100),
       tempPercentage: isNaN(tempPercentage) ? 0 : tempPercentage,
       isNearLimit: usagePercentage > 80,
-      monthlyUploads: storageStats.currentMonthUploads,
-      monthlySize: formatFileSize(storageStats.currentMonthBytes)
+      monthlyUploads: storageStats.current_month_uploads,
+      monthlySize: formatFileSize(storageStats.current_month_bytes)
     };
   }, [storageStats]);
 
@@ -189,7 +335,7 @@ const StorageUsageDashboard: React.FC = () => {
     };
 
     attachments.forEach(attachment => {
-      const type = attachment.contentType;
+      const type = attachment.content_type || '';
       let category: keyof typeof stats = 'others';
 
       if (type.startsWith('image/')) category = 'images';
@@ -197,11 +343,145 @@ const StorageUsageDashboard: React.FC = () => {
       else if (type.includes('pdf') || type.includes('document') || type.includes('text')) category = 'documents';
 
       stats[category].count++;
-      stats[category].size += attachment.fileSize;
+      stats[category].size += attachment.file_size || 0;
     });
 
     return stats;
   }, [attachments]);
+
+  // Debug function to check database connectivity
+  const debugDatabaseConnection = async () => {
+    if (!user) {
+      console.log('Debug: No user authenticated');
+      toast.error('No user authenticated for debug');
+      return;
+    }
+
+    try {
+      console.log('Debug: Testing database connection for user:', user.id);
+      
+      // Check authentication session and attempt refresh
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      console.log('Debug: Current session:', { 
+        hasSession: !!session, 
+        userId: session?.user?.id, 
+        error: sessionError,
+        expiresAt: session?.expires_at
+      });
+
+      // Try to refresh session if needed
+      if (!session) {
+        console.log('Debug: Attempting session refresh...');
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+        console.log('Debug: Session refresh result:', { 
+          hasNewSession: !!refreshData?.session,
+          error: refreshError 
+        });
+      }
+      
+      // Test basic connection with storage_usage
+      const { data: testData, error: testError } = await supabase
+        .from('storage_usage')
+        .select('*')
+        .eq('user_id', user.id);
+      
+      console.log('Debug: Storage usage query result:', { 
+        count: testData?.length || 0, 
+        data: testData,
+        error: testError 
+      });
+      
+      // Test RPC function for storage calculation
+      const { data: rpcData, error: rpcError } = await supabase.rpc('update_storage_usage', { 
+        p_user_id: user.id 
+      });
+      
+      console.log('Debug: RPC storage function result:', { rpcData, rpcError });
+      
+      // Test new RPC function for getting attachments
+      const { data: attachmentsData, error: attachmentsError } = await supabase.rpc('get_user_attachments', { 
+        p_user_id: user.id,
+        p_limit: 10 
+      });
+      
+      console.log('Debug: RPC attachments function result:', { 
+        count: attachmentsData?.length || 0,
+        data: attachmentsData?.slice(0, 3) || [], // Show first 3 only
+        error: attachmentsError,
+        errorCode: attachmentsError?.code
+      });
+      
+      // Still test direct table access for comparison
+      const { data: outgoingAttachments, error: outgoingError } = await supabase
+        .from('email_attachments')
+        .select('id, filename, content_type, file_size, created_at')
+        .eq('user_id', user.id)
+        .limit(5);
+      
+      console.log('Debug: Direct email_attachments query:', { 
+        count: outgoingAttachments?.length || 0, 
+        data: outgoingAttachments?.slice(0, 2) || [],
+        error: outgoingError,
+        errorCode: outgoingError?.code
+      });
+      
+      const { data: incomingAttachments, error: incomingError } = await supabase
+        .from('attachment_references')
+        .select('id, filename, content_type, file_size, created_at')
+        .eq('user_id', user.id)
+        .limit(5);
+      
+      console.log('Debug: Direct attachment_references query:', { 
+        count: incomingAttachments?.length || 0, 
+        data: incomingAttachments?.slice(0, 2) || [],
+        error: incomingError,
+        errorCode: incomingError?.code
+      });
+
+      // Test file type categorization with RPC data
+      const fileTypes = attachmentsData?.reduce((acc, att) => {
+        const type = att.content_type || '';
+        let category = 'others';
+        if (type.startsWith('image/')) category = 'images';
+        else if (type.startsWith('video/')) category = 'videos';
+        else if (type.includes('pdf') || type.includes('document') || type.includes('text')) category = 'documents';
+        
+        acc[category] = (acc[category] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>) || {};
+      
+      console.log('Debug: File type breakdown from RPC:', fileTypes);
+      
+      // Summary
+      const rpcAttachmentCount = attachmentsData?.length || 0;
+      const directAttachmentCount = (outgoingAttachments?.length || 0) + (incomingAttachments?.length || 0);
+      const hasAuthErrors = !!(outgoingError?.code === 'PGRST301' || incomingError?.code === 'PGRST301');
+      const hasRpcError = !!attachmentsError;
+      
+      console.log('Debug: Summary:', {
+        rpcAttachmentCount,
+        directAttachmentCount,
+        hasAuthErrors,
+        hasRpcError,
+        sessionValid: !!session,
+        storageRecords: testData?.length || 0
+      });
+      
+      if (hasRpcError) {
+        toast.error(`RPC function failed - check console for details`);
+      } else if (hasAuthErrors && rpcAttachmentCount > 0) {
+        toast.success(`RPC bypass working! Found ${rpcAttachmentCount} attachments via RPC (direct queries blocked)`);
+      } else if (rpcAttachmentCount > 0) {
+        toast.success(`Debug complete - Found ${rpcAttachmentCount} attachments`);
+      } else {
+        toast.warning('No attachments found via any method');
+      }
+      
+    } catch (error) {
+      console.error('Debug: Database connection test failed:', error);
+      toast.error('Database connection test failed - check console');
+    }
+  };
 
   if (loading) {
     return (
@@ -217,17 +497,25 @@ const StorageUsageDashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Storage Usage Dashboard</h1>
-          <p className="text-gray-600">Monitor and manage your email attachment storage</p>
+          <h1 className="text-3xl font-bold text-gray-900">Storage Usage Dashboard</h1>
+          <p className="text-gray-600 mt-1">Monitor and manage your email attachment storage</p>
         </div>
-        <button
-          onClick={refreshStorageStats}
-          disabled={refreshing}
-          className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={debugDatabaseConnection}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            Debug DB
+          </button>
+          <button
+            onClick={refreshStorageStats}
+            disabled={refreshing}
+            className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Tab Navigation */}
@@ -303,7 +591,7 @@ const StorageUsageDashboard: React.FC = () => {
                 <div className="ml-4">
                   <div className="text-sm font-medium text-gray-500">Temp Storage</div>
                   <div className="text-2xl font-bold text-gray-900">
-                    {formatFileSize(storageStats?.tempStorageBytes || 0)}
+                    {formatFileSize(storageStats?.temp_storage_bytes || 0)}
                   </div>
                   <div className="text-sm text-gray-500">
                     {storageMetrics?.tempPercentage.toFixed(1)}% of total
@@ -337,7 +625,7 @@ const StorageUsageDashboard: React.FC = () => {
                 <div className="ml-4">
                   <div className="text-sm font-medium text-gray-500">Total Files</div>
                   <div className="text-2xl font-bold text-gray-900">
-                    {storageStats?.totalAttachments || 0}
+                    {storageStats?.total_attachments || 0}
                   </div>
                   <div className="text-sm text-gray-500">attachments</div>
                 </div>

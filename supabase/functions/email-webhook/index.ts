@@ -31,6 +31,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
 import { Client } from "npm:@microsoft/microsoft-graph-client";
+import { 
+  createEmailProvider, 
+  getProviderTypeFromPlatform, 
+  AttachmentProcessor 
+} from "../_shared/email-providers.ts";
 
 // CORS headers for cross-origin requests
 const corsHeaders = {
@@ -145,16 +150,50 @@ serve(async (req) => {
 
       try {
         // Extract message ID from Graph API resource path
-        // Resource format: "Users/{userId}/Messages/{messageId}"
-        // We need the message ID to fetch detailed email information
-        const messageId = resource.split('/Messages/')[1];
+        // Handle multiple possible resource formats from Microsoft Graph
+        console.log('Full resource path:', resource);
+        
+        let messageId = null;
+        
+        // Method 1: Standard format "Users/{userId}/Messages/{messageId}"
+        if (resource.includes('/Messages/')) {
+          const parts = resource.split('/Messages/');
+          if (parts.length > 1) {
+            // Get the message ID part and remove any query parameters
+            messageId = parts[1].split('?')[0].split('&')[0];
+          }
+        }
+        
+        // Method 2: Alternative format - extract from any URL-like resource
+        if (!messageId && resource.includes('/')) {
+          const pathSegments = resource.split('/');
+          // Look for a segment that looks like a message ID (usually long alphanumeric)
+          for (let i = 0; i < pathSegments.length; i++) {
+            const segment = pathSegments[i];
+            // Message IDs are typically long (>20 chars) and alphanumeric
+            if (segment.length > 20 && /^[A-Za-z0-9_-]+$/.test(segment)) {
+              messageId = segment;
+              break;
+            }
+          }
+        }
+        
+        // Method 3: If all else fails, try to find the last path segment
+        if (!messageId) {
+          const pathSegments = resource.split('/').filter(Boolean);
+          if (pathSegments.length > 0) {
+            // Take the last segment and clean it
+            messageId = pathSegments[pathSegments.length - 1].split('?')[0];
+          }
+        }
         
         if (!messageId) {
-          console.error('Could not extract message ID from resource:', resource);
+          console.error('⚠️ Could not extract message ID from resource path');
+          console.error('Resource:', resource);
           continue; // Skip if we can't parse the message ID
         }
         
-        console.log('Processing message ID:', messageId);
+        console.log('✅ Processing message ID:', messageId);
         
         // Fetch detailed message information from Microsoft Graph API
         // Enhanced to include internetMessageHeaders for universal threading
@@ -198,43 +237,114 @@ serve(async (req) => {
 
         const universalThreadId = threadResult || messageIdHeader || message.conversationId;
 
-        // Save email to database with universal threading
-        // Using upsert with composite unique constraint (graph_id, user_id)
-        // to prevent duplicate emails from being stored
-        const { error: saveError } = await supabase
-          .from('emails')
-          .upsert({
-            id: crypto.randomUUID(),                                  // Internal unique ID
-            graph_id: message.id,                                     // Microsoft Graph message ID
-            thread_id: universalThreadId,                            // Universal thread ID using RFC2822 standards
-            subject: message.subject || 'No Subject',                // Email subject line
-            from: message.from?.emailAddress?.address || '',         // Sender email address
-            snippet: message.bodyPreview || '',                      // Email preview text
-            content: message.body?.content || '',                    // Full email body content
-            date: message.receivedDateTime || new Date().toISOString(), // Email received timestamp
-            read: message.isRead || false,                           // Read status
-            priority: 1,                                             // Default priority level
-            status: 'open',                                          // Default email status
-            store_id: store.id,                                      // Associated email store
-            user_id: store.user_id,                                  // User who owns this email
-            business_id: store.business_id,                          // Business context for multi-tenancy
-            internet_message_id: message.internetMessageId,         // Standard email message ID
-            microsoft_conversation_id: message.conversationId,      // Store original conversationId for reference
-            message_id_header: messageIdHeader,                     // RFC2822 Message-ID header
-            in_reply_to_header: inReplyToHeader,                    // RFC2822 In-Reply-To header
-            references_header: referencesHeader,                    // RFC2822 References header
-            conversation_root_id: universalThreadId                 // Root message ID for this conversation
-          }, {
-            onConflict: 'graph_id,user_id',                         // Composite unique constraint
-            ignoreDuplicates: true                                   // Skip if duplicate exists
-          });
-
-        if (saveError) {
-          console.error('Error saving email:', saveError);
-          continue; // Continue processing other notifications even if one fails
+        // 🎯 SMART REFERENCE ARCHITECTURE: Extract attachment metadata
+        let attachmentCount = 0;
+        let linkedAttachments: any[] = [];
+        const emailId = crypto.randomUUID(); // Generate email ID for attachment linking
+        
+        try {
+          // Set up global supabase client for provider status updates
+          (globalThis as any).supabaseClient = supabase;
+          
+          // Create email provider for attachment metadata extraction
+          const providerType = getProviderTypeFromPlatform(store.platform || 'outlook');
+          const emailProvider = createEmailProvider(providerType, store.id, store.access_token);
+          
+          // Extract attachment metadata (not content - just metadata!)
+          const attachmentMetadata = await emailProvider.extractAttachmentMetadata(messageId);
+          
+          if (attachmentMetadata && attachmentMetadata.length > 0) {
+            console.log(`Found ${attachmentMetadata.length} attachments for email ${messageId}`);
+            
+            // Extract content IDs from email HTML to link with attachments
+            const contentIds = AttachmentProcessor.extractContentIdFromHtml(message.body?.content || '');
+            
+            // Link content IDs to attachments for inline image detection
+            linkedAttachments = await AttachmentProcessor.linkContentIdsToAttachments(
+              contentIds, 
+              attachmentMetadata
+            );
+            
+            attachmentCount = linkedAttachments.length;
+            console.log(`Found ${attachmentCount} attachment references (will process after email save)`);
+          }
+        } catch (attachmentError) {
+          console.error('Error extracting attachments (non-fatal):', attachmentError);
+          // Don't fail email processing if attachment extraction fails
         }
 
-        console.log('Email saved successfully with universal threading:', message.id);
+        // Check if email already exists before processing
+        const { data: existingEmail } = await supabase
+          .from('emails')
+          .select('id')
+          .eq('graph_id', message.id)
+          .eq('user_id', store.user_id)
+          .single();
+
+        let actualEmailId: string;
+
+        if (existingEmail) {
+          // Email already exists, skip processing to avoid foreign key issues
+          actualEmailId = existingEmail.id;
+          console.log('Email already exists, skipping processing:', message.id, 'Existing ID:', actualEmailId);
+          
+          // Skip attachment processing since it's already done
+          continue;
+        } else {
+          // Save new email to database with universal threading
+          const { data: savedEmail, error: saveError } = await supabase
+            .from('emails')
+            .insert({
+              id: emailId,                                              // Use generated ID for new emails
+              graph_id: message.id,                                     // Microsoft Graph message ID
+              thread_id: universalThreadId,                            // Universal thread ID using RFC2822 standards
+              subject: message.subject || 'No Subject',                // Email subject line
+              from: message.from?.emailAddress?.address || '',         // Sender email address
+              snippet: message.bodyPreview || '',                      // Email preview text
+              content: message.body?.content || '',                    // Full email body content
+              date: message.receivedDateTime || new Date().toISOString(), // Email received timestamp
+              read: message.isRead || false,                           // Read status
+              priority: 1,                                             // Default priority level
+              status: 'open',                                          // Default email status
+              store_id: store.id,                                      // Associated email store
+              user_id: store.user_id,                                  // User who owns this email
+              business_id: store.business_id,                          // Business context for multi-tenancy
+              internet_message_id: message.internetMessageId,         // Standard email message ID
+              microsoft_conversation_id: message.conversationId,      // Store original conversationId for reference
+              message_id_header: messageIdHeader,                     // RFC2822 Message-ID header
+              in_reply_to_header: inReplyToHeader,                    // RFC2822 In-Reply-To header
+              references_header: referencesHeader,                    // RFC2822 References header
+              conversation_root_id: universalThreadId,                // Root message ID for this conversation
+              has_attachments: attachmentCount > 0,                   // Smart Reference Architecture: metadata flag
+              attachment_reference_count: attachmentCount             // Smart Reference Architecture: count for UI
+            })
+            .select('id')
+            .single();
+
+          if (saveError) {
+            console.error('Error saving email:', saveError);
+            continue; // Continue processing other notifications even if one fails
+          }
+
+          actualEmailId = savedEmail?.id || emailId;
+          console.log('Email saved successfully with universal threading:', message.id, 'New ID:', actualEmailId);
+        }
+
+        // 🎯 NOW process attachment metadata AFTER email is saved
+        if (linkedAttachments.length > 0) {
+          try {
+            await AttachmentProcessor.processAttachmentMetadata(
+              linkedAttachments,
+              actualEmailId,  // Use actual ID from database
+              store.user_id,
+              supabase
+            );
+            console.log(`Successfully processed ${linkedAttachments.length} attachment references`);
+          } catch (attachmentError) {
+            console.error('Error saving attachment references:', attachmentError);
+            // Don't fail email processing if attachment saving fails
+          }
+        }
         
       } catch (error) {
         console.error('Error processing message:', error);

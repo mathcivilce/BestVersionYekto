@@ -40,6 +40,7 @@ import Integrations from './pages/Integrations';
 import ReplyTemplates from './pages/ReplyTemplates';
 import CreateTemplate from './pages/CreateTemplate';
 import EditTemplate from './pages/EditTemplate';
+import CreateTicket from './pages/CreateTicket';
 import TeamManagement from './pages/TeamManagement';
 import StorageDashboard from './pages/StorageDashboard';
 
@@ -80,6 +81,9 @@ function App() {
                   <Route path="inbox" element={<Inbox />} />
                   <Route path="inbox/:storeId" element={<Inbox />} />
                   <Route path="inbox/email/:emailId" element={<EmailDetails />} />
+                  
+                  {/* Ticket creation route */}
+                  <Route path="create-ticket/:storeId" element={<CreateTicket />} />
                   
                   {/* Configuration and management pages */}
                   <Route path="connections" element={<Connections />} />

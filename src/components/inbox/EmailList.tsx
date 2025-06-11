@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUp, ArrowDown, Star, Clock, Tag, Inbox, RefreshCw, ArrowLeft, ArrowRight, AlertOctagon, Search } from 'lucide-react';
+import { ArrowUp, ArrowDown, Star, Clock, Tag, Inbox, RefreshCw, ArrowLeft, ArrowRight, AlertOctagon, Search, Plus } from 'lucide-react';
 import { useInbox } from '../../contexts/InboxContext';
 import EmailListItem from './EmailListItem';
 import EmailFilter from './EmailFilter';
@@ -57,6 +57,12 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
       console.error('Error refreshing emails:', error);
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleCreateTicket = () => {
+    if (store) {
+      navigate(`/create-ticket/${store.id}`);
     }
   };
 
@@ -308,6 +314,16 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
         </div>
         
         <div className="flex items-center space-x-2">
+          <button
+            onClick={handleCreateTicket}
+            disabled={!store}
+            className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Create new ticket"
+          >
+            <Plus size={16} className="mr-2" />
+            Create Ticket
+          </button>
+          
           <button
             onClick={handleRefresh}
             disabled={refreshing || loading}

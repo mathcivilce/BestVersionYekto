@@ -20,7 +20,12 @@ import {
 import { toast } from 'react-hot-toast';
 import { formatFileSize } from '../../utils/fileStorageStrategy';
 import AttachmentsTab from './AttachmentsTab';
-import { supabase } from '../../config/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 import { useAuth } from '../../contexts/AuthContext';
 
 interface StorageStats {

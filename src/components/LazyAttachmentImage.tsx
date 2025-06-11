@@ -1,12 +1,13 @@
 /**
- * Lazy Attachment Image Component - Phase 2: Lazy Loading
+ * Lazy Attachment Image Component - Phase 2: Optimized Loading
  * 
  * Intelligent image component that handles:
  * - CID (Content-ID) resolution for inline images
- * - Progressive loading with beautiful placeholders
- * - Automatic fallback mechanisms
+ * - Optimized loading for multiple images in emails
+ * - Gray placeholder for layout preservation
+ * - Shared session management for performance
  * - Cache-aware loading strategies
- * - Seamless user experience
+ * - Seamless user experience optimized for modern SaaS standards
  * 
  * Usage:
  * <LazyAttachmentImage 
@@ -25,6 +26,41 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+// Shared session cache to avoid multiple auth calls
+let sharedSession: any = null;
+let sessionPromise: Promise<any> | null = null;
+let sessionExpiry: number = 0;
+
+const getSharedSession = async () => {
+  // Check if we have a valid cached session
+  if (sharedSession && Date.now() < sessionExpiry) {
+    return sharedSession;
+  }
+
+  // If there's already a session request in progress, wait for it
+  if (sessionPromise) {
+    return await sessionPromise;
+  }
+
+  // Create new session request
+  sessionPromise = (async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        sharedSession = session;
+        // Cache for 5 minutes or until token expiry, whichever is sooner
+        const expiryTime = session.expires_at ? session.expires_at * 1000 : Date.now() + 300000;
+        sessionExpiry = Math.min(expiryTime - 60000, Date.now() + 300000); // 1 minute buffer
+      }
+      return session;
+    } finally {
+      sessionPromise = null;
+    }
+  })();
+
+  return await sessionPromise;
+};
+
 interface LazyAttachmentImageProps {
   cid?: string;              // Content-ID for inline images (cid:xxxxx)
   attachmentId?: string;     // Direct attachment reference ID
@@ -39,7 +75,7 @@ interface LazyAttachmentImageProps {
 
 interface LoadingState {
   status: 'idle' | 'loading' | 'loaded' | 'error' | 'not-found';
-  progress?: number;
+  showSpinner?: boolean;     // Only show spinner after delay
   errorMessage?: string;
   cacheLevel?: 'L1' | 'L2' | 'MISS';
 }
@@ -60,6 +96,7 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const abortController = useRef<AbortController | null>(null);
+  const spinnerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Effect to start loading when component mounts or props change
   useEffect(() => {
@@ -70,33 +107,38 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
 
     loadAttachmentImage();
 
-    // Cleanup function to cancel ongoing requests
+    // Cleanup function to cancel ongoing requests and timeouts
     return () => {
       if (abortController.current) {
         abortController.current.abort();
+      }
+      if (spinnerTimeoutRef.current) {
+        clearTimeout(spinnerTimeoutRef.current);
       }
     };
   }, [cid, attachmentId]);
 
   const loadAttachmentImage = async () => {
     try {
-      setLoadingState({ status: 'loading', progress: 0 });
+      setLoadingState({ status: 'loading', showSpinner: false });
 
-      // Cancel any existing request
+      // Cancel any existing request and timeout
       if (abortController.current) {
         abortController.current.abort();
       }
+      if (spinnerTimeoutRef.current) {
+        clearTimeout(spinnerTimeoutRef.current);
+      }
+      
       abortController.current = new AbortController();
 
-      // Get current user session
-      const { data: { session } } = await supabase.auth.getSession();
-      console.log('🔍 Session debug:', {
-        hasSession: !!session,
-        hasAccessToken: !!session?.access_token,
-        accessTokenLength: session?.access_token?.length,
-        user: session?.user?.email,
-        expiresAt: session?.expires_at ? new Date(session.expires_at * 1000).toISOString() : null
-      });
+      // Set up delayed spinner with shorter delay for better UX
+      spinnerTimeoutRef.current = setTimeout(() => {
+        setLoadingState(prev => ({ ...prev, showSpinner: true }));
+      }, 200); // Reduced from 300ms to 200ms
+
+      // Use shared session to avoid multiple auth calls
+      const session = await getSharedSession();
       
       if (!session) {
         throw new Error('User not authenticated');
@@ -118,21 +160,11 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
 
       const url = `${baseUrl}?${params.toString()}`;
 
-      // Set progress to 25% when starting fetch
-      setLoadingState({ status: 'loading', progress: 25 });
-
-      // Prepare headers for debugging
+      // Prepare headers
       const headers = {
         'Authorization': `Bearer ${session.access_token}`,
         'Content-Type': 'application/json',
       };
-      
-      console.log('🌐 Fetch request debug:', {
-        url,
-        hasAuthHeader: !!headers.Authorization,
-        authHeaderPrefix: headers.Authorization?.substring(0, 20) + '...',
-        contentType: headers['Content-Type']
-      });
 
       // Fetch attachment with authentication
       const response = await fetch(url, {
@@ -140,9 +172,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
         headers,
         signal: abortController.current.signal
       });
-
-      // Set progress to 50% when response received
-      setLoadingState({ status: 'loading', progress: 50 });
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -154,43 +183,36 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
         throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      // Get cache level from headers
+      // Get cache level from headers (for debugging/optimization)
       const cacheLevel = response.headers.get('X-Cache') as 'L1-HIT' | 'L2-HIT' | 'MISS' | null;
       const cacheLevelSimple = cacheLevel?.includes('L1') ? 'L1' : 
                               cacheLevel?.includes('L2') ? 'L2' : 'MISS';
-
-      // Set progress to 75% when starting to process blob
-      setLoadingState({ 
-        status: 'loading', 
-        progress: 75,
-        cacheLevel: cacheLevelSimple 
-      });
 
       // Convert response to blob and create object URL
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
 
-      // Set progress to 90% when blob is ready
-      setLoadingState({ 
-        status: 'loading', 
-        progress: 90,
-        cacheLevel: cacheLevelSimple 
-      });
-
       // Preload the image to ensure it's fully loaded before displaying
       const img = new Image();
       img.onload = () => {
+        // Clear the spinner timeout since we're done loading
+        if (spinnerTimeoutRef.current) {
+          clearTimeout(spinnerTimeoutRef.current);
+        }
+        
         setImageSrc(objectUrl);
         setImageSize({ width: img.naturalWidth, height: img.naturalHeight });
         setLoadingState({ 
           status: 'loaded', 
-          progress: 100,
           cacheLevel: cacheLevelSimple 
         });
       };
       
       img.onerror = () => {
         URL.revokeObjectURL(objectUrl);
+        if (spinnerTimeoutRef.current) {
+          clearTimeout(spinnerTimeoutRef.current);
+        }
         setLoadingState({ 
           status: 'error', 
           errorMessage: 'Failed to load image data' 
@@ -200,6 +222,11 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       img.src = objectUrl;
 
     } catch (error: any) {
+      // Clear the spinner timeout on error
+      if (spinnerTimeoutRef.current) {
+        clearTimeout(spinnerTimeoutRef.current);
+      }
+      
       if (error.name === 'AbortError') {
         // Request was cancelled, don't update state
         return;
@@ -214,7 +241,10 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   };
 
   const calculateDisplaySize = () => {
-    if (!imageSize) return { width: 'auto', height: 'auto' };
+    if (!imageSize) {
+      // Default placeholder size when we don't know image dimensions yet
+      return { width: '200px', height: '150px' };
+    }
     
     const { width: naturalWidth, height: naturalHeight } = imageSize;
     
@@ -271,7 +301,7 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
     case 'loading':
       return (
         <div 
-          className={`relative flex items-center justify-center bg-gray-100 border border-gray-200 rounded-lg ${className}`}
+          className={`relative flex items-center justify-center bg-gray-100 border border-gray-200 rounded-lg overflow-hidden ${className}`}
           style={{ 
             width: displaySize.width, 
             height: displaySize.height, 
@@ -280,30 +310,14 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
             ...style 
           }}
         >
-          <div className="flex flex-col items-center space-y-2 p-4">
-            <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
-            <div className="text-sm text-gray-600 text-center">
-              Loading image...
-              {loadingState.progress && (
-                <div className="text-xs text-gray-500 mt-1">
-                  {loadingState.progress}%
-                  {loadingState.cacheLevel && (
-                    <span className="ml-1 text-blue-500">
-                      ({loadingState.cacheLevel} Cache)
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Gray placeholder for layout preservation */}
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-50 to-gray-100" />
           
-          {/* Progress bar */}
-          {loadingState.progress && (
-            <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200 rounded-b-lg overflow-hidden">
-              <div 
-                className="h-full bg-blue-500 transition-all duration-300 ease-out"
-                style={{ width: `${loadingState.progress}%` }}
-              />
+          {/* Only show spinner after delay - now smaller and more subtle */}
+          {loadingState.showSpinner && (
+            <div className="relative z-10 flex items-center justify-center">
+              <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
+              {/* Removed text and cache info for cleaner look */}
             </div>
           )}
         </div>
@@ -324,8 +338,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
             onClick={onClick}
           />
           
-
-          
           {/* Download button */}
           {showDownloadButton && (
             <button
@@ -335,6 +347,13 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
             >
               <Download className="w-4 h-4" />
             </button>
+          )}
+          
+          {/* Cache level indicator (subtle, dev-friendly) */}
+          {loadingState.cacheLevel && process.env.NODE_ENV === 'development' && (
+            <div className="absolute top-1 left-1 px-1 py-0.5 bg-black/50 text-white text-xs rounded">
+              {loadingState.cacheLevel}
+            </div>
           )}
         </div>
       );
@@ -352,10 +371,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
           }}
         >
           <div className="flex flex-col items-center space-y-2 p-4 text-center">
-            <ImageIcon className="w-6 h-6 text-yellow-600" />
-            <div className="text-sm text-yellow-700">
-              Image not found
-            </div>
+            <ImageIcon className="w-5 h-5 text-yellow-600" />
+            <div className="text-sm text-yellow-700">Image not found</div>
             <div className="text-xs text-yellow-600">
               {cid ? `CID: ${cid}` : `ID: ${attachmentId}`}
             </div>
@@ -376,12 +393,10 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
           }}
         >
           <div className="flex flex-col items-center space-y-2 p-4 text-center">
-            <AlertCircle className="w-6 h-6 text-red-600" />
-            <div className="text-sm text-red-700">
-              Failed to load image
-            </div>
+            <AlertCircle className="w-5 h-5 text-red-600" />
+            <div className="text-sm text-red-700">Failed to load</div>
             {loadingState.errorMessage && (
-              <div className="text-xs text-red-600">
+              <div className="text-xs text-red-600 max-w-32 truncate">
                 {loadingState.errorMessage}
               </div>
             )}

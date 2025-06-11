@@ -31,3 +31,47 @@
   position: relative;
   z-index: 0;
 }
+
+/* Email content isolation - prevent CSS bleeding */
+.email-content-isolated {
+  /* CSS containment to prevent layout and style leakage */
+  contain: layout style;
+  isolation: isolate;
+  
+  /* Reset any potential inheritance */
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+.email-content-isolated * {
+  /* Prevent any styles from escaping the email content area */
+  contain: layout style;
+  
+  /* Reset dangerous positioning */
+  position: static !important;
+  z-index: auto !important;
+  
+  /* Prevent transforms that could break layout */
+  transform: none !important;
+  
+  /* Ensure fonts don't break */
+  font-family: inherit !important;
+}
+
+/* Override any email styles that try to affect the page */
+.email-content-isolated a {
+  text-decoration: none !important;
+  color: #3b82f6 !important; /* Blue color for links */
+}
+
+.email-content-isolated a:hover {
+  text-decoration: underline !important;
+}
+
+/* Prevent email content from affecting typography outside its container */
+body, .sidebar-nav, .main-nav, .email-header, .email-controls {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji" !important;
+  text-decoration: none !important;
+}

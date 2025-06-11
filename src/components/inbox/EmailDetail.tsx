@@ -634,7 +634,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
   return (
     <div className="h-full flex flex-col md:flex-row">
-      <div className={`flex-1 flex flex-col h-full ${showSidebar ? 'md:mr-64' : ''}`}>
+      <div className="flex-1 flex flex-col h-full">
         <div className="bg-white border-b border-gray-200 p-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center space-x-4">
@@ -720,12 +720,12 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
           </div>
         </div>
         
-        <div className="flex-1 overflow-auto p-4 bg-white">
+        <div className="flex-1 overflow-auto bg-white pl-4 pt-4">
           {/* Real-time presence indicator */}
           <EmailPresenceIndicator emailId={emailId} />
           
           {thread.map((message, index) => (
-            <div key={message.id} className="mb-6">
+            <div key={message.id} className="mb-6 pr-4">
               <div className="flex items-start mb-3">
                 <div className="mr-3 mt-1">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
@@ -769,7 +769,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
             </div>
           ))}
           
-          <div className="pl-11 mt-6 space-y-4">
+          <div className="pl-11 mt-6 space-y-4 pb-4 pr-4">
             {!replyMode && !noteMode && (
               <div className="flex space-x-4">
                 <button
@@ -921,7 +921,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
       </div>
       
       <div 
-        className={`border-l border-gray-200 bg-gray-50 w-full md:w-64 fixed md:relative right-0 top-0 bottom-0 z-10 transform transition-transform duration-300 ease-in-out ${
+        className={`border-l border-gray-200 bg-gray-50 w-full md:w-80 fixed md:relative right-0 top-0 bottom-0 z-10 transform transition-transform duration-300 ease-in-out ${
           showSidebar ? 'translate-x-0' : 'translate-x-full md:translate-x-0'
         } ${showSidebar ? 'md:block' : 'hidden md:block'}`}
       >

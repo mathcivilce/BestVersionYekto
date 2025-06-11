@@ -194,39 +194,50 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
         </details>
       )}
 
-      {/* Render processed content parts */}
-      {processedContent.parts.map((part, index) => {
-        if (part.type === 'html') {
-          return (
-            <div
-              key={`html-${index}`}
-              className="email-html-content prose prose-sm max-w-none"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(part.content) }}
-              style={{
-                lineHeight: '1.6',
-                color: '#374151',
-                whiteSpace: 'pre-wrap', // Preserve spacing and line breaks
-                wordWrap: 'break-word', // Handle long words properly
-                overflowWrap: 'break-word' // Modern browsers word wrapping
-              }}
-            />
-          );
-        } else if (part.type === 'cid-image' && part.cid) {
-          return (
-            <div key={`cid-${index}`} className="my-2">
-              <LazyAttachmentImage
-                cid={part.cid}
-                alt={part.alt || 'Email image'}
-                maxWidth={maxImageWidth}
-                maxHeight={maxImageHeight}
-                className="inline-block"
-                showDownloadButton={true}
+      {/* Render processed content parts with CSS isolation */}
+      <div 
+        className="email-content-isolated"
+        style={{
+          contain: 'layout style',
+          isolation: 'isolate',
+          position: 'relative'
+        }}
+      >
+        {processedContent.parts.map((part, index) => {
+          if (part.type === 'html') {
+            return (
+              <div
+                key={`html-${index}`}
+                className="email-html-content prose prose-sm max-w-none"
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(part.content) }}
+                style={{
+                  lineHeight: '1.6',
+                  color: '#374151',
+                  whiteSpace: 'pre-wrap', // Preserve spacing and line breaks
+                  wordWrap: 'break-word', // Handle long words properly
+                  overflowWrap: 'break-word', // Modern browsers word wrapping
+                  contain: 'layout style', // Prevent style leakage
+                  isolation: 'isolate' // Create new stacking context
+                }}
               />
-            </div>
-          );
-        }
-        return null;
-      })}
+            );
+          } else if (part.type === 'cid-image' && part.cid) {
+            return (
+              <div key={`cid-${index}`} className="my-2">
+                <LazyAttachmentImage
+                  cid={part.cid}
+                  alt={part.alt || 'Email image'}
+                  maxWidth={maxImageWidth}
+                  maxHeight={maxImageHeight}
+                  className="inline-block"
+                  showDownloadButton={true}
+                />
+              </div>
+            );
+          }
+          return null;
+        })}
+      </div>
 
       {/* Development info */}
       {false && processedContent.cidCount > 0 && (
@@ -243,17 +254,21 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
   );
 };
 
-// Enhanced HTML sanitization that preserves formatting while maintaining security
+// Enhanced HTML sanitization that prevents CSS bleeding and maintains security
 const sanitizeHtml = (html: string): string => {
   // Create a temporary div to parse HTML
   const tempDiv = document.createElement('div');
   tempDiv.innerHTML = html;
 
   // Remove dangerous elements but preserve formatting elements
-  const dangerousElements = tempDiv.querySelectorAll('script, object, embed, iframe, form, input, button');
+  const dangerousElements = tempDiv.querySelectorAll('script, object, embed, iframe, form, input, button, link, meta');
   dangerousElements.forEach(element => element.remove());
 
-  // Remove dangerous event handlers but preserve style and class attributes
+  // Remove all <style> elements to prevent CSS bleeding
+  const styleElements = tempDiv.querySelectorAll('style');
+  styleElements.forEach(element => element.remove());
+
+  // Remove dangerous event handlers and problematic style attributes
   const allElements = tempDiv.querySelectorAll('*');
   allElements.forEach(element => {
     Array.from(element.attributes).forEach(attr => {
@@ -261,6 +276,7 @@ const sanitizeHtml = (html: string): string => {
       if (attr.name.startsWith('on')) {
         element.removeAttribute(attr.name);
       }
+      
       // Remove dangerous href protocols but allow mailto and http/https
       if (attr.name === 'href' && attr.value) {
         const value = attr.value.toLowerCase();
@@ -268,11 +284,61 @@ const sanitizeHtml = (html: string): string => {
           element.removeAttribute(attr.name);
         }
       }
+      
       // Remove dangerous src protocols for non-image elements
       if (attr.name === 'src' && attr.value && !element.tagName.toLowerCase().includes('img')) {
         const value = attr.value.toLowerCase();
         if (value.startsWith('javascript:') || value.startsWith('data:') || value.startsWith('vbscript:')) {
           element.removeAttribute(attr.name);
+        }
+      }
+
+      // Sanitize style attributes to prevent CSS injection
+      if (attr.name === 'style') {
+        const styleValue = attr.value;
+        // Remove potentially dangerous CSS properties
+        const dangerousCSS = [
+          'position:\\s*(fixed|absolute)',
+          'z-index:\\s*\\d+',
+          'transform:\\s*.*',
+          '!important',
+          'expression\\s*\\(',
+          'javascript:',
+          'behavior:',
+          'binding:',
+          '-moz-binding:',
+          'font-family:\\s*[^;]*[<>]', // Prevent XSS via font-family
+        ];
+        
+        let cleanStyle = styleValue;
+        dangerousCSS.forEach(pattern => {
+          cleanStyle = cleanStyle.replace(new RegExp(pattern, 'gi'), '');
+        });
+        
+        // Only keep the style if it's significantly different (i.e., we removed something dangerous)
+        if (cleanStyle.trim()) {
+          element.setAttribute('style', cleanStyle);
+        } else {
+          element.removeAttribute('style');
+        }
+      }
+
+      // Remove class attributes that might reference global CSS
+      if (attr.name === 'class') {
+        // Keep only basic styling classes, remove potential framework classes
+        const classValue = attr.value;
+        const safeClasses = classValue
+          .split(' ')
+          .filter(cls => {
+            // Allow basic styling classes but block framework/global classes
+            return !cls.match(/^(btn|nav|header|footer|container|row|col|pull-|push-|hidden|visible|sr-only)/i);
+          })
+          .join(' ');
+        
+        if (safeClasses.trim()) {
+          element.setAttribute('class', safeClasses);
+        } else {
+          element.removeAttribute('class');
         }
       }
     });

@@ -7,33 +7,38 @@
  * Key Features:
  * - Real-time statistics from inbox context
  * - Email volume visualization
- * - Store performance metrics
+ * - Email performance metrics
  * - Status distribution with progress bars
  * - Responsive grid layout for different screen sizes
  * 
  * Data Sources:
  * - useInbox: Provides emails and stores data
  * - useAuth: Provides current user information
+ * - TeamService: Provides team member information
  * 
  * The component uses React.useMemo for performance optimization of calculations
  * and useEffect for debugging and monitoring data flow.
  */
 
-import React, { useMemo, useEffect } from 'react';
-import { Inbox, Clock, Users, Store } from 'lucide-react';
+import React, { useMemo, useEffect, useState } from 'react';
+import { Inbox, Clock, Users, Mail } from 'lucide-react';
 
 // Dashboard-specific components
 import StatsCard from '../components/dashboard/StatsCard';
 import EmailVolumeChart from '../components/dashboard/EmailVolumeChart';
-import StorePerformance from '../components/dashboard/StorePerformance';
+import EmailPerformance from '../components/dashboard/StorePerformance';
 
 // Context hooks for data access
 import { useInbox } from '../contexts/InboxContext';
 import { useAuth } from '../contexts/AuthContext';
+import { TeamService } from '../services/teamService';
+import { TeamMember } from '../types/team';
 
 const Dashboard: React.FC = () => {
   const { emails, stores } = useInbox();
   const { user } = useAuth();
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [teamMembersLoading, setTeamMembersLoading] = useState(true);
 
   // Development debugging - monitor component initialization
   React.useEffect(() => {
@@ -43,6 +48,28 @@ const Dashboard: React.FC = () => {
     console.log('Dashboard: InboxContext stores:', stores.length);
   }, []);
 
+  // Load team members
+  useEffect(() => {
+    const loadTeamMembers = async () => {
+      if (!user) {
+        setTeamMembersLoading(false);
+        return;
+      }
+      
+      try {
+        const members = await TeamService.getTeamMembers();
+        setTeamMembers(members);
+      } catch (error) {
+        console.error('Dashboard: Error loading team members:', error);
+        setTeamMembers([]);
+      } finally {
+        setTeamMembersLoading(false);
+      }
+    };
+
+    loadTeamMembers();
+  }, [user]);
+
   // Monitor data changes for debugging
   useEffect(() => {
     console.log('Dashboard: Main useEffect triggered with:', {
@@ -50,9 +77,10 @@ const Dashboard: React.FC = () => {
       userId: user?.id,
       userEmail: user?.email,
       emailsLength: emails.length,
-      storesLength: stores.length
+      storesLength: stores.length,
+      teamMembersCount: teamMembers.length
     });
-  }, [user, emails, stores]);
+  }, [user, emails, stores, teamMembers]);
 
   /**
    * Calculate dashboard statistics
@@ -63,7 +91,7 @@ const Dashboard: React.FC = () => {
    * Calculated metrics:
    * - Total email count
    * - Average response time (currently simplified - needs actual resolution timestamps)
-   * - Active stores count (connected and active status)
+   * - Active email accounts count (connected and active status)
    * - Email status distribution for progress visualization
    */
   const stats = useMemo(() => {
@@ -81,8 +109,8 @@ const Dashboard: React.FC = () => {
         }, 0) / (resolvedEmails.length * 1000 * 60 * 60) // Convert milliseconds to hours
       : 0;
 
-    // Calculate number of actively connected stores
-    const activeStores = stores.filter(s => s.connected && s.status === 'active').length;
+    // Calculate number of actively connected email accounts
+    const activeEmails = stores.filter(s => s.connected && s.status === 'active').length;
 
     // Calculate email status distribution for progress bars
     const statusCounts = emails.reduce((acc, email) => {
@@ -93,7 +121,7 @@ const Dashboard: React.FC = () => {
     return {
       totalEmails,
       avgResponseTime: avgResponseTime.toFixed(1),
-      activeStores,
+      activeEmails,
       statusCounts
     };
   }, [emails, stores]);
@@ -130,18 +158,18 @@ const Dashboard: React.FC = () => {
           color="green"
         />
         
-        {/* Active Email Stores Count */}
+        {/* Active Email Accounts Count */}
         <StatsCard
-          title="Active Stores"
-          value={stats.activeStores}
-          icon={<Store size={20} />}
+          title="Active Emails"
+          value={stats.activeEmails}
+          icon={<Mail size={20} />}
           color="indigo"
         />
         
-        {/* Team Members Count (simplified for now) */}
+        {/* Team Members Count */}
         <StatsCard
           title="Team Members"
-          value={stores.length > 0 ? '1' : '0'} // TODO: Implement actual team member count
+          value={teamMembersLoading ? '...' : teamMembers.length}
           icon={<Users size={20} />}
           color="purple"
         />
@@ -236,8 +264,8 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
       
-      {/* Store Performance Analytics */}
-      <StorePerformance />
+      {/* Email Performance Analytics */}
+      <EmailPerformance />
     </div>
   );
 };

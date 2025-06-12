@@ -254,6 +254,9 @@ serve(async (req) => {
         internet_message_id: messageId,
         message_id_header: messageId,
         is_outbound: true,
+        // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
+        direction: 'outbound',
+        recipient: to,
         created_at: new Date().toISOString()
       })
       .select()

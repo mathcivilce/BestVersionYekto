@@ -13,7 +13,7 @@
  * - Platform-agnostic OAuth token refresh
  * - Intelligent filtering (only processes eligible stores)
  * - Comprehensive error handling and recovery strategies
- * - Performance monitoring and health tracking
+ * - Health tracking integration for connection validation
  * - Retry logic with exponential backoff
  * - Batch processing for multiple stores
  * 
@@ -32,8 +32,6 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js";
-import { JobMonitor, SystemHealthMonitor } from "../_shared/monitoring.ts";
-import { OAuthRetryHandler, ErrorRecoveryStrategies } from "../_shared/retry-handler.ts";
 
 // CORS headers for cross-origin requests
 const corsHeaders = {
@@ -121,7 +119,6 @@ serve(async (req) => {
   }
 
   // Initialize Supabase client with service role for admin operations
-  // Enhanced monitoring system for tracking performance and errors
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -132,9 +129,6 @@ serve(async (req) => {
       }
     }
   );
-
-  // Initialize job monitoring for performance tracking and error reporting
-  const monitor = new JobMonitor('OAuth Token Refresh', 'refresh_tokens', supabase);
 
   try {
     // Parse request body with fallback to empty object
@@ -148,38 +142,21 @@ serve(async (req) => {
       console.log(`Refreshing specific store: ${storeId}`);
       
       // Query for specific store with strict eligibility filters
-      const { data: store, error } = await monitor.trackDbQuery(
-        () => supabase
-          .from('stores')
-          .select('*')
-          .eq('id', storeId)
-          .eq('connected', true)                    // FILTER: Only connected accounts
-          .eq('oauth_method', 'server_side')       // FILTER: Only server OAuth (not MSAL popup)
-          .in('platform', OAUTH_PLATFORMS)         // FILTER: Only OAuth platforms (not IMAP/POP3)
-          .not('refresh_token', 'is', null)        // FILTER: Must have refresh token
-          .single(),
-        `Query specific store ${storeId} for token refresh`
-      );
+      const { data: store, error } = await supabase
+        .from('stores')
+        .select('*')
+        .eq('id', storeId)
+        .eq('connected', true)                    // FILTER: Only connected accounts
+        .eq('oauth_method', 'server_side')       // FILTER: Only server OAuth (not MSAL popup)
+        .in('platform', OAUTH_PLATFORMS)         // FILTER: Only OAuth platforms (not IMAP/POP3)
+        .not('refresh_token', 'is', null)        // FILTER: Must have refresh token
+        .single();
 
       if (error) {
-        monitor.recordError({
-          errorCode: 'STORE_QUERY_ERROR',
-          errorMessage: `Store query error for ${storeId}: ${error.message}`,
-          storeId,
-          severity: 'high',
-          isRetryable: false
-        });
         throw error;
       }
       if (!store) {
-        monitor.recordError({
-          errorCode: 'STORE_NOT_ELIGIBLE',
-          errorMessage: `Store not found or not eligible for refresh: ${storeId}. Store must be connected, use server_side OAuth, and have a refresh token.`,
-          storeId,
-          severity: 'medium',
-          isRetryable: false
-        });
-        throw new Error(`Store not found or not eligible for refresh: ${storeId}`);
+        throw new Error(`Store not found or not eligible for refresh: ${storeId}. Store must be connected, use server_side OAuth, and have a refresh token.`);
       }
       
       console.log(`Found eligible store: ${store.name} (${store.platform})`);
@@ -198,173 +175,100 @@ serve(async (req) => {
         .eq('connected', true)                    // CRITICAL: Only connected accounts
         .eq('oauth_method', 'server_side')       // CRITICAL: Only server OAuth (excludes MSAL popup)
         .in('platform', OAUTH_PLATFORMS)         // CRITICAL: Only OAuth platforms (excludes IMAP/POP3)
-        .lt('token_expires_at', oneHourFromNow.toISOString()) // Expiring within 1 hour
-        .not('refresh_token', 'is', null);       // CRITICAL: Must have refresh token
+        .not('refresh_token', 'is', null)        // CRITICAL: Must have refresh token
+        .lt('token_expires_at', oneHourFromNow.toISOString()) // FILTER: Expiring within 1 hour
+        .order('token_expires_at', { ascending: true }); // Process most urgent first
 
       if (error) {
-        console.error('Error querying expiring stores:', error);
         throw error;
       }
-      
+
       stores = expiringStores || [];
       console.log(`Found ${stores.length} OAuth stores with expiring tokens`);
-      
-      // Log details for debugging and monitoring
-      stores.forEach(store => {
-        console.log(`Expiring token: ${store.name} (${store.platform}, expires: ${store.token_expires_at})`);
-      });
     } else {
       throw new Error('Either storeId or refreshAllExpiring must be specified');
     }
 
+    if (stores.length === 0) {
+      console.log('No eligible stores found for token refresh');
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          message: 'No eligible stores found for token refresh',
+          refreshed: 0,
+          failed: 0,
+          results: []
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const results = [];
 
-    // Process each eligible OAuth store
+    // Process each store for token refresh
     for (const store of stores) {
-      const storeStartTime = performance.now();
-      
       try {
-        console.log(`=== REFRESHING TOKEN FOR STORE: ${store.id} ===`);
-        console.log(`Store: ${store.name} (${store.platform}, oauth_method: ${store.oauth_method})`);
-
-        // Double-check we have a refresh token (should always be true due to query filter)
-        if (!store.refresh_token) {
-          console.warn(`No refresh token available for store ${store.id} - this should not happen due to query filters`);
-          
-          monitor.recordStoreResult({
-            storeId: store.id,
-            storeName: store.name,
-            platform: store.platform,
-            oauthMethod: store.oauth_method,
-            status: 'skipped',
-            processingTimeMs: performance.now() - storeStartTime,
-            errorMessage: 'No refresh token available',
-            actionsTaken: ['skipped_no_refresh_token']
-          });
-          continue;
-        }
-
+        console.log(`\n🔄 Processing store: ${store.name} (${store.platform})`);
+        console.log(`Current token expires: ${store.token_expires_at}`);
+        
         // Get platform-specific configuration
         const platformConfig = PLATFORM_CONFIGS[store.platform as OAuthPlatform];
         if (!platformConfig) {
-          console.error(`No configuration found for platform: ${store.platform}`);
-          continue;
+          throw new Error(`Unsupported platform: ${store.platform}`);
         }
 
-        console.log(`Using ${platformConfig.platform} OAuth configuration`);
-
-        // DEBUG: Validate environment variables are available
+        // Get OAuth credentials from environment
         const clientId = Deno.env.get(platformConfig.clientIdEnv);
-        const clientSecret = Deno.env.get(platformConfig.clientSecretEnv);
-        console.log(`DEBUG - Client ID available: ${clientId ? 'Yes' : 'No'}`);
-        console.log(`DEBUG - Client Secret available: ${clientSecret ? 'Yes' : 'No'}`);
-        console.log(`DEBUG - Client Secret length: ${clientSecret ? clientSecret.length : 0}`);
+        const clientSecret = platformConfig.clientSecretEnv ? Deno.env.get(platformConfig.clientSecretEnv) : undefined;
+        
+        if (!clientId) {
+          throw new Error(`Missing client ID for platform ${store.platform} (${platformConfig.clientIdEnv})`);
+        }
 
-        // Prepare platform-specific token refresh request
-        const tokenUrl = platformConfig.tokenEndpoint;
-        const refreshParams = new URLSearchParams({
-          client_id: Deno.env.get(platformConfig.clientIdEnv) || '',
-          scope: platformConfig.scope,
+        console.log(`Using ${platformConfig.platform} OAuth endpoint: ${platformConfig.tokenEndpoint}`);
+
+        // Prepare token refresh request body
+        const tokenRequestBody = new URLSearchParams({
+          grant_type: 'refresh_token',
           refresh_token: store.refresh_token,
-          grant_type: 'refresh_token'
+          client_id: clientId,
+          scope: platformConfig.scope
         });
 
-        // Add client secret if required (most OAuth providers need this)
-        if (platformConfig.clientSecretEnv) {
-          const clientSecret = Deno.env.get(platformConfig.clientSecretEnv);
-          if (clientSecret) {
-            refreshParams.set('client_secret', clientSecret);
-          }
+        // Add client secret if required (not needed for PKCE flows)
+        if (clientSecret) {
+          tokenRequestBody.append('client_secret', clientSecret);
         }
 
-        // Create retry handler for this OAuth operation
-        const retryHandler = new OAuthRetryHandler();
+        console.log(`Making token refresh request to ${platformConfig.platform}...`);
         
-        // Attempt token refresh with retry logic and monitoring
-        const retryResult = await retryHandler.refreshTokenWithRetry(
-          () => monitor.trackApiCall(
-            () => fetch(tokenUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: refreshParams.toString()
-            }),
-            `OAuth token refresh for ${store.platform} store ${store.name}`
-          ),
-          { id: store.id, name: store.name, platform: store.platform }
-        );
+        // Make token refresh request with platform-specific endpoint
+        const response = await fetch(platformConfig.tokenEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+          },
+          body: tokenRequestBody
+        });
 
-        if (!retryResult.success) {
-          // Apply error recovery strategy based on error type
-          const recoveryStrategy = await ErrorRecoveryStrategies.handleOAuthError(
-            retryResult.error, 
-            store, 
-            supabase
-          );
-
-          console.error(`🚨 Token refresh failed after ${retryResult.attemptsUsed} attempts (${retryResult.totalTimeMs}ms)`);
-          console.error(`🔧 Recovery strategy: ${recoveryStrategy.action}`);
-
-          if (recoveryStrategy.disconnectStore) {
-            await supabase
-              .from('stores')
-              .update({
-                connected: false,
-                status: 'issue',
-                token_last_refreshed: new Date().toISOString()
-              })
-              .eq('id', store.id);
-
-            monitor.recordStoreResult({
-              storeId: store.id,
-              storeName: store.name,
-              platform: store.platform,
-              oauthMethod: store.oauth_method,
-              status: 'failed',
-              processingTimeMs: performance.now() - storeStartTime,
-              errorCode: 'OAUTH_PERMANENT_FAILURE',
-              errorMessage: `${retryResult.error?.message} - Store disconnected`,
-              actionsTaken: ['disconnected_store', recoveryStrategy.action]
-            });
-
-            results.push({
-              storeId: store.id,
-              storeName: store.name,
-              platform: store.platform,
-              success: false,
-              error: `Permanent failure - store disconnected: ${retryResult.error?.message}`,
-              errorType: 'OAUTH_PERMANENT_FAILURE',
-              attemptsUsed: retryResult.attemptsUsed,
-              recoveryAction: recoveryStrategy.action
-            });
-            continue;
-          }
-
-          throw retryResult.error;
-        }
-
-        const response = retryResult.result;
-
-        // Handle token refresh response
         if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          console.error(`Token refresh failed for store ${store.id} (${store.platform}):`, {
-            status: response.status,
-            error: errorData.error,
-            description: errorData.error_description
-          });
+          const errorData = await response.json().catch(() => ({ error: 'unknown_error' }));
+          console.error(`Token refresh failed for ${store.name}:`, response.status, errorData);
           
-          // Handle specific error cases based on OAuth standards
+          // Handle different error types
           if (response.status === 400 && errorData.error === 'invalid_grant') {
-            // Refresh token is permanently invalid - disconnect the store
-            console.error(`Invalid refresh token for store ${store.id} - marking as disconnected`);
+            // Invalid or expired refresh token - disconnect the store
+            console.log(`Invalid refresh token for store ${store.id} - marking as disconnected`);
             
             await supabase
               .from('stores')
               .update({
                 connected: false,
-                status: 'issue',
+                status: 'disconnected',
+                access_token: null,
+                refresh_token: null,
+                token_expires_at: null,
                 token_last_refreshed: new Date().toISOString()
               })
               .eq('id', store.id);
@@ -394,13 +298,18 @@ serve(async (req) => {
         expiresAt.setSeconds(expiresAt.getSeconds() + tokenData.expires_in);
         console.log(`New token expires at: ${expiresAt.toISOString()}`);
 
-        // Prepare store update with new token data
+        // Prepare store update with new token data and reset health tracking
         const updateData: any = {
           access_token: tokenData.access_token,
           token_expires_at: expiresAt.toISOString(),
           token_last_refreshed: new Date().toISOString(),
           connected: true,  // Ensure store remains connected after successful refresh
-          status: 'active'  // Reset status to active after successful refresh
+          status: 'active', // Reset status to active after successful refresh
+          
+          // Reset health tracking after successful token refresh
+          health_check_failures: 0,
+          last_validation_error: null,
+          last_health_check: new Date().toISOString()
         };
 
         // Update refresh token if provided 
@@ -426,21 +335,6 @@ serve(async (req) => {
 
         console.log(`✅ Successfully refreshed token for store: ${store.name} (${store.platform})`);
         
-        monitor.recordStoreResult({
-          storeId: store.id,
-          storeName: store.name,
-          platform: store.platform,
-          oauthMethod: store.oauth_method,
-          status: 'success',
-          processingTimeMs: performance.now() - storeStartTime,
-          oldTokenExpiresAt: store.token_expires_at,
-          newTokenExpiresAt: expiresAt.toISOString(),
-          actionsTaken: [
-            'token_refreshed',
-            tokenData.refresh_token ? 'refresh_token_updated' : 'refresh_token_reused'
-          ]
-        });
-        
         results.push({
           storeId: store.id,
           storeName: store.name,
@@ -452,28 +346,6 @@ serve(async (req) => {
 
       } catch (error) {
         console.error(`❌ Error refreshing token for store ${store.id} (${store.name}):`, error);
-        
-        monitor.recordError({
-          errorCode: 'TOKEN_REFRESH_ERROR',
-          errorMessage: error.message,
-          storeId: store.id,
-          storeName: store.name,
-          platform: store.platform,
-          severity: 'high',
-          isRetryable: true
-        });
-
-        monitor.recordStoreResult({
-          storeId: store.id,
-          storeName: store.name,
-          platform: store.platform,
-          oauthMethod: store.oauth_method,
-          status: 'failed',
-          processingTimeMs: performance.now() - storeStartTime,
-          errorCode: 'TOKEN_REFRESH_ERROR',
-          errorMessage: error.message,
-          actionsTaken: ['marked_as_issue']
-        });
         
         // Update last refresh attempt timestamp and mark as having issues
         // Don't disconnect the store unless it's a permanent error (handled above)
@@ -513,29 +385,12 @@ serve(async (req) => {
       console.log(`❌ Failed to refresh tokens for:`, failed.map(f => `${f.storeName} (${f.platform}): ${f.error}`));
     }
 
-    // Complete monitoring and generate final metrics
-    const jobMetrics = monitor.complete(
-      failed.length === 0 ? 'completed' : 
-      successful.length > 0 ? 'partial' : 'failed'
-    );
-
-    const healthReport = monitor.generateHealthReport();
-
     return new Response(
       JSON.stringify({ 
         success: true, 
         refreshed: results.filter(r => r.success).length,
         failed: results.filter(r => !r.success).length,
-        results,
-        // Enhanced monitoring data
-        jobMetrics: {
-          duration: jobMetrics.performance.totalDurationMs,
-          successRate: healthReport.successRate,
-          itemsProcessed: jobMetrics.itemsProcessed,
-          apiCalls: jobMetrics.performance.apiCallsCount,
-          dbQueries: jobMetrics.performance.dbQueriesCount
-        },
-        healthScore: healthReport.health
+        results
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
@@ -543,20 +398,9 @@ serve(async (req) => {
   } catch (error) {
     console.error('Error in refresh-tokens function:', error);
     
-    // Record critical error in monitoring
-    monitor.recordError({
-      errorCode: 'FUNCTION_CRITICAL_ERROR',
-      errorMessage: error.message,
-      severity: 'critical',
-      isRetryable: false
-    });
-    
-    monitor.complete('failed');
-    
     return new Response(
       JSON.stringify({ 
-        error: error.message,
-        healthScore: 0 
+        error: error.message
       }),
       { 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

@@ -459,6 +459,9 @@ serve(async (req) => {
         store_id: email.store.id,
         content: processedContent, // Use the processed HTML content with inline images
         sent_at: new Date().toISOString(),
+        // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
+        direction: 'outbound',
+        recipient: email.from, // We're replying to the original sender
         created_at: new Date().toISOString()
       })
       .select('*')

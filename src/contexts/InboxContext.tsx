@@ -40,6 +40,9 @@ import toast from 'react-hot-toast';
 import { useAuth } from './AuthContext';
 import { TokenManager } from '../utils/tokenManager';
 import { createClient } from '@supabase/supabase-js';
+import { ConnectionHealthValidator, ValidationResult } from '../utils/connectionHealthValidator';
+import { ErrorRecoveryManager, RecoveryResult } from '../utils/errorRecoveryManager';
+import { OAuthStateManager, DuplicateCheckResult } from '../utils/oauthStateManager';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -68,6 +71,9 @@ interface Email {
   store_id: string;              // Reference to the store this email belongs to
   thread_id?: string;            // Thread/conversation identifier
   assigned_to?: string | null;   // User assigned to handle this email
+  // 🆕 NEW FIELDS: Direction and recipient for proper customer identification
+  direction?: 'inbound' | 'outbound'; // Email direction (inbound = received, outbound = sent)
+  recipient?: string;            // Actual recipient email address
 }
 
 /**
@@ -238,6 +244,11 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
   const [tokenManager, setTokenManager] = useState<TokenManager | null>(null);
   const [periodicRefreshCleanup, setPeriodicRefreshCleanup] = useState<(() => void) | null>(null);
+  
+  // OAuth Health Validation System
+  const [healthValidator] = useState(() => new ConnectionHealthValidator());
+  const [recoveryManager] = useState(() => new ErrorRecoveryManager());
+  const [oauthStateManager] = useState(() => new OAuthStateManager());
   
   // Available email statuses for filtering and management
   const statuses = ['open', 'pending', 'resolved'];
@@ -493,11 +504,92 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const connectStoreServerOAuth = async (storeData: any) => {
     let tempStoreId: string | null = null;
     let connectingStartTime: number;
+    let attemptId: string = '';
     
     try {
       setLoading(true);
       setPendingStore(storeData);
       connectingStartTime = Date.now(); // Track when connecting starts
+
+      console.log('=== OAUTH CONNECTION HEALTH CHECK START ===');
+      
+      // Step 1: Register OAuth attempt and check for concurrent attempts
+      attemptId = oauthStateManager.registerOAuthAttempt({
+        email: storeData.email,
+        platform: storeData.platform,
+        storeName: storeData.name,
+        userId: user?.id || '',
+        businessId: 'temp' // Will be updated after business_id fetch
+      });
+
+      // Step 2: Advanced duplicate detection
+      const duplicateCheck = await oauthStateManager.performAdvancedDuplicateCheck(
+        storeData.email,
+        storeData.platform,
+        user?.id || '',
+        storeData.name,
+        attemptId // Pass current attempt ID to exclude it from concurrent check
+      );
+
+      if (!duplicateCheck.shouldProceed) {
+        oauthStateManager.updateOAuthAttempt(attemptId, 'cancelled');
+        
+        if (duplicateCheck.recommendedAction === 'wait') {
+          toast.error(duplicateCheck.message || 'Please wait for the current connection to complete');
+        } else if (duplicateCheck.recommendedAction === 'use_existing' && duplicateCheck.existingStore) {
+          console.log('Found existing store, performing health validation...');
+          
+          // Step 3: Validate existing connection health
+          const validationResult = await healthValidator.validateConnection(duplicateCheck.existingStore);
+          
+          if (validationResult.isValid) {
+            console.log('✅ Existing connection is healthy, no OAuth needed');
+            toast.success('Email account is already connected and working');
+            setPendingStore(null);
+            setLoading(false);
+            return;
+          } else {
+            console.log('❌ Existing connection is broken, attempting recovery...');
+            
+            // Step 4: Attempt automatic recovery
+            const recoveryResult = await recoveryManager.executeRecovery(validationResult, duplicateCheck.existingStore);
+            
+            // Log recovery statistics for debugging
+            ErrorRecoveryManager.logRecoveryStats(recoveryResult, validationResult, duplicateCheck.existingStore);
+            
+            if (recoveryResult.success && !recoveryResult.shouldStartOAuth) {
+              console.log('✅ Automatic recovery successful');
+              const toastMessage = ErrorRecoveryManager.getToastMessage(recoveryResult, validationResult);
+              if (toastMessage.type === 'success') {
+                toast.success(toastMessage.message);
+              } else if (toastMessage.type === 'info') {
+                toast(toastMessage.message);
+              }
+              setPendingStore(null);
+              setLoading(false);
+              return;
+            } else {
+              console.log('🔄 Recovery requires OAuth flow, continuing...');
+              const toastMessage = ErrorRecoveryManager.getToastMessage(recoveryResult, validationResult);
+              if (toastMessage.type === 'info') {
+                toast(toastMessage.message);
+              }
+              // Continue with OAuth flow to fix the connection
+              oauthStateManager.updateOAuthAttempt(attemptId, 'pending'); // Reactivate attempt
+            }
+          }
+        }
+        
+        if (duplicateCheck.recommendedAction !== 'use_existing') {
+          setPendingStore(null);
+          setLoading(false);
+          return;
+        }
+      }
+
+      console.log('✅ Duplicate check passed, proceeding with OAuth flow');
+
+      console.log('=== STARTING OAUTH FLOW ===');
 
       // Create a temporary store with connecting status to show in UI
       const tempStore: Store = {
@@ -655,9 +747,11 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Wait for OAuth result via polling
       const result = await pollForOAuthResult();
       const newStore = result.store;
+      const isUpdatingExisting = result.isUpdatingExisting;
 
       console.log('=== OAUTH POLLING SUCCESS ===');
       console.log('Store data from polling:', newStore);
+      console.log('Operation type:', isUpdatingExisting ? 'UPDATED EXISTING' : 'CREATED NEW');
 
       // Update the temp store with real email but keep "connecting" status during sync
       console.log('=== UPDATING TEMP STORE WITH REAL EMAIL (STILL CONNECTING) ===');
@@ -728,14 +822,33 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           console.log('Final connected store:', storeWithLastSynced);
           
           setStores(prev => {
-            // Remove temp store and add final connected store
-            const filtered = prev.filter(store => store.id !== tempStoreId);
-            const newStores = [...filtered, storeWithLastSynced];
-            console.log('Final stores array after sync:', newStores);
-            return newStores;
+            if (isUpdatingExisting) {
+              // Update existing store in place
+              return prev.map(store => {
+                if (store.id === newStore.id) {
+                  return storeWithLastSynced;
+                } else if (store.id === tempStoreId) {
+                  // Remove temp store
+                  return null;
+                }
+                return store;
+              }).filter(Boolean) as Store[];
+            } else {
+              // Remove temp store and add new final connected store
+              const filtered = prev.filter(store => store.id !== tempStoreId);
+              const newStores = [...filtered, storeWithLastSynced];
+              console.log('Final stores array after sync:', newStores);
+              return newStores;
+            }
           });
           
-          toast.success('Email account connected and synced successfully!');
+          const successMessage = isUpdatingExisting 
+            ? 'Email account reconnected and synced successfully!'
+            : 'Email account connected and synced successfully!';
+          toast.success(successMessage);
+          
+          // Update OAuth attempt status
+          oauthStateManager.updateOAuthAttempt(attemptId, 'completed', newStore.email);
         } catch (syncError) {
           console.error('Initial sync failed:', syncError);
           const errorMessage = (syncError as any)?.message || 'Unknown error';
@@ -748,11 +861,31 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           };
           
           setStores(prev => {
-            const filtered = prev.filter(store => store.id !== tempStoreId);
-            return [...filtered, storeWithError];
+            if (isUpdatingExisting) {
+              // Update existing store in place
+              return prev.map(store => {
+                if (store.id === newStore.id) {
+                  return storeWithError;
+                } else if (store.id === tempStoreId) {
+                  // Remove temp store
+                  return null;
+                }
+                return store;
+              }).filter(Boolean) as Store[];
+            } else {
+              // Remove temp store and add final store
+              const filtered = prev.filter(store => store.id !== tempStoreId);
+              return [...filtered, storeWithError];
+            }
           });
           
-          toast.error(`Email account connected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`);
+          const errorToastMessage = isUpdatingExisting 
+            ? `Email account reconnected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`
+            : `Email account connected but initial sync failed: ${errorMessage}. You can manually sync using the sync button.`;
+          toast.error(errorToastMessage);
+          
+          // Update OAuth attempt status - still successful connection, just sync failed
+          oauthStateManager.updateOAuthAttempt(attemptId, 'completed', newStore.email);
         }
       };
 
@@ -760,6 +893,9 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       performInitialSync();
     } catch (error: any) {
       console.error('Error in server OAuth:', error);
+      
+      // Update OAuth attempt status
+      oauthStateManager.updateOAuthAttempt(attemptId, 'failed');
       
       // Remove the temporary connecting store on error
       if (tempStoreId) {
@@ -1086,7 +1222,15 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         // Start periodic token refresh
         const cleanup = manager.startPeriodicRefresh();
-        setPeriodicRefreshCleanup(() => cleanup);
+        
+        // Start OAuth state manager cleanup
+        const oauthCleanup = oauthStateManager.startCleanupInterval();
+        
+        // Combine cleanup functions
+        setPeriodicRefreshCleanup(() => () => {
+          cleanup();
+          oauthCleanup();
+        });
 
       } catch (err) {
         console.error('Failed to initialize MSAL:', err);

@@ -125,6 +125,15 @@ serve(async (req) => {
       businessId: businessId 
     });
 
+    // Log duplicate prevention context for debugging
+    console.log('=== DUPLICATE PREVENTION CONTEXT ===');
+    console.log(`Platform: ${storeData.platform}`);
+    console.log(`Store Name: ${storeData.name}`);
+    console.log(`User ID: ${userId}`);
+    console.log('Note: Frontend health validation may have already checked for duplicates');
+    console.log('OAuth callback will handle smart duplicate resolution');
+    console.log('=== END DUPLICATE PREVENTION CONTEXT ===');
+
     // Validate required parameters
     if (!storeData?.name || !userId || !businessId) {
       throw new Error('Missing required parameters: storeData.name, userId, or businessId');

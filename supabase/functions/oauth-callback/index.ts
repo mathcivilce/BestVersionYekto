@@ -188,40 +188,125 @@ serve(async (req: Request) => {
       userEmail = 'unknown@example.com'; // Fallback email
     }
 
-    // Create or update store with standardized platform naming
-    // PLATFORM STANDARDIZATION: Microsoft OAuth = 'outlook' platform
-    // This ensures compatibility with refresh token system and future multi-platform support
-    // Platform naming convention:
-    // - 'outlook' for Microsoft/Office 365 email accounts
-    // - 'gmail' for Google email accounts (future implementation)
-    // - 'imap' for generic IMAP servers (future implementation)
-    const { data: store, error: storeError } = await supabase
+    console.log('=== SMART DUPLICATE HANDLING START ===');
+    
+    // Check for existing store with same email address for this user
+    const { data: existingStore } = await supabase
       .from('stores')
-      .upsert({
-        id: pendingRequest.store_data.id || crypto.randomUUID(),
-        user_id: pendingRequest.user_id,
-        business_id: pendingRequest.business_id,
-        name: pendingRequest.store_data.name,
-        platform: 'outlook', // FIXED: Use 'outlook' for Microsoft email accounts (was 'email')
-        color: pendingRequest.store_data.color || '#3b82f6',
-        email: userEmail,
-        sync_from: pendingRequest.store_data.syncFrom,
-        sync_to: pendingRequest.store_data.syncTo,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token, // Server OAuth stores refresh tokens for automatic renewal
-        token_expires_at: new Date(Date.now() + (tokens.expires_in * 1000)).toISOString(),
-        token_last_refreshed: new Date().toISOString(), // Track when token was last refreshed
-        oauth_method: 'server_side', // Distinguishes from 'msal_popup' method
-        connected: true,
-        status: 'active',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }, { 
-        onConflict: 'id',
-        ignoreDuplicates: false 
-      })
-      .select()
+      .select('*')
+      .eq('user_id', pendingRequest.user_id)
+      .eq('email', userEmail.toLowerCase())
       .single();
+
+    let store: any;
+    let isUpdatingExisting = false;
+
+    if (existingStore) {
+      console.log(`Found existing store for email ${userEmail}: ${existingStore.id}`);
+      console.log('Updating existing store with new OAuth tokens...');
+      
+      isUpdatingExisting = true;
+      
+      // Update existing store with new tokens and reset health status
+      const { data: updatedStore, error: updateError } = await supabase
+        .from('stores')
+        .update({
+          // Update authentication data
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_expires_at: new Date(Date.now() + (tokens.expires_in * 1000)).toISOString(),
+          token_last_refreshed: new Date().toISOString(),
+          oauth_method: 'server_side',
+          
+          // Update connection status
+          connected: true,
+          status: 'active',
+          
+          // Reset health tracking (fresh OAuth = healthy connection)
+          health_check_failures: 0,
+          last_validation_error: null,
+          last_health_check: new Date().toISOString(),
+          
+          // Update store configuration (allow user to modify name/color in UI)
+          name: pendingRequest.store_data.name,
+          color: pendingRequest.store_data.color || existingStore.color || '#3b82f6',
+          sync_from: pendingRequest.store_data.syncFrom,
+          sync_to: pendingRequest.store_data.syncTo,
+          
+          // Update metadata
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingStore.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Failed to update existing store:', updateError);
+        throw new Error(`Failed to update existing store: ${updateError.message}`);
+      }
+
+      store = updatedStore;
+      console.log('✅ Successfully updated existing store with new OAuth tokens');
+      
+    } else {
+      console.log('No existing store found, creating new store...');
+      
+      // Create or update store with standardized platform naming
+      // PLATFORM STANDARDIZATION: Microsoft OAuth = 'outlook' platform
+      // This ensures compatibility with refresh token system and future multi-platform support
+      // Platform naming convention:
+      // - 'outlook' for Microsoft/Office 365 email accounts
+      // - 'gmail' for Google email accounts (future implementation)
+      // - 'imap' for generic IMAP servers (future implementation)
+      const { data: newStore, error: createError } = await supabase
+        .from('stores')
+        .upsert({
+          id: pendingRequest.store_data.id || crypto.randomUUID(),
+          user_id: pendingRequest.user_id,
+          business_id: pendingRequest.business_id,
+          name: pendingRequest.store_data.name,
+          platform: 'outlook', // FIXED: Use 'outlook' for Microsoft email accounts (was 'email')
+          color: pendingRequest.store_data.color || '#3b82f6',
+          email: userEmail,
+          sync_from: pendingRequest.store_data.syncFrom,
+          sync_to: pendingRequest.store_data.syncTo,
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token, // Server OAuth stores refresh tokens for automatic renewal
+          token_expires_at: new Date(Date.now() + (tokens.expires_in * 1000)).toISOString(),
+          token_last_refreshed: new Date().toISOString(), // Track when token was last refreshed
+          oauth_method: 'server_side', // Distinguishes from 'msal_popup' method
+          connected: true,
+          status: 'active',
+          
+          // Initialize health tracking for new store
+          health_check_failures: 0,
+          last_validation_error: null,
+          last_health_check: new Date().toISOString(),
+          
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }, { 
+          onConflict: 'id',
+          ignoreDuplicates: false 
+        })
+        .select()
+        .single();
+
+      if (createError) {
+        console.error('Failed to create new store:', createError);
+        throw new Error(`Failed to create new store: ${createError.message}`);
+      }
+
+      store = newStore;
+      console.log('✅ Successfully created new store');
+    }
+
+    console.log('=== SMART DUPLICATE HANDLING COMPLETE ===');
+    console.log(`Store operation: ${isUpdatingExisting ? 'UPDATED' : 'CREATED'}`);
+    console.log(`Store ID: ${store.id}`);
+    console.log(`Email: ${store.email}`);
+
+    const storeError = null; // Clear any previous error since we handled it above
 
     if (storeError) {
       console.error('Failed to create/update store:', storeError);
@@ -247,15 +332,21 @@ serve(async (req: Request) => {
     // Prepare success response data for frontend
     const responseData = {
       success: true,
+      isUpdatingExisting, // Indicate if this was an update or new creation
       store: {
         id: store.id,
         name: store.name,
         platform: store.platform,
         color: store.color,
+        email: store.email, // Include email in response
         sync_from: store.sync_from,
         sync_to: store.sync_to,
         oauth_method: store.oauth_method,
-        created_at: store.created_at
+        connected: store.connected,
+        status: store.status,
+        last_synced: store.last_synced,
+        created_at: store.created_at,
+        updated_at: store.updated_at
       }
     };
 

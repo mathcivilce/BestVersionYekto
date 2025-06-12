@@ -753,7 +753,10 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
                   </div>
                   {index === 0 && message.type === 'email' && (
                     <span className="text-sm text-gray-600 block mt-1">
-                      To: {currentStore?.email || 'support@yourbusiness.com'}
+                      To: {message.direction === 'outbound' 
+                        ? message.recipient 
+                        : (currentStore?.email || 'support@yourbusiness.com')
+                      }
                     </span>
                   )}
                 </div>

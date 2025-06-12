@@ -316,7 +316,10 @@ serve(async (req) => {
               references_header: referencesHeader,                    // RFC2822 References header
               conversation_root_id: universalThreadId,                // Root message ID for this conversation
               has_attachments: attachmentCount > 0,                   // Smart Reference Architecture: metadata flag
-              attachment_reference_count: attachmentCount             // Smart Reference Architecture: count for UI
+              attachment_reference_count: attachmentCount,            // Smart Reference Architecture: count for UI
+              // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
+              direction: 'inbound',                                   // Incoming emails are always inbound
+              recipient: toEmails                                      // Store the actual recipients (our store email)
             })
             .select('id')
             .single();

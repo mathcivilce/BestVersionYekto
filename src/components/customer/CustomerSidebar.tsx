@@ -7,6 +7,8 @@ import { useNavigate } from 'react-router-dom';
 interface CustomerSidebarProps {
   email: {
     from: string;
+    direction?: 'inbound' | 'outbound';
+    recipient?: string;
     storeName?: string;
     storeColor?: string;
   };
@@ -34,8 +36,24 @@ const CustomerSidebar: React.FC<CustomerSidebarProps> = ({ email }) => {
           throw new Error('Not authenticated');
         }
 
+        // 🎯 SMART CUSTOMER DETECTION: Determine the actual customer email based on direction
+        const customerEmail = email.direction === 'outbound' 
+          ? email.recipient  // For outbound emails, customer is the recipient
+          : email.from;      // For inbound emails, customer is the sender
+
+        console.log('🔍 Customer Detection:', {
+          direction: email.direction,
+          from: email.from,
+          recipient: email.recipient,
+          detectedCustomer: customerEmail
+        });
+
+        if (!customerEmail) {
+          throw new Error('Unable to determine customer email');
+        }
+
         const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/shopify-lookup?email=${encodeURIComponent(email.from)}`,
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/shopify-lookup?email=${encodeURIComponent(customerEmail)}`,
           {
             headers: {
               'Authorization': `Bearer ${session.access_token}`,
@@ -58,10 +76,11 @@ const CustomerSidebar: React.FC<CustomerSidebarProps> = ({ email }) => {
       }
     };
 
-    if (email.from) {
+    // Only fetch if we have enough information to determine customer
+    if (email.from && (email.direction !== 'outbound' || email.recipient)) {
       fetchCustomerData();
     }
-  }, [email.from]);
+  }, [email.from, email.direction, email.recipient]);
 
   if (loading) {
     return (

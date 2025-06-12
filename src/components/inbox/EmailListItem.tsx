@@ -15,6 +15,8 @@ interface Email {
   storeName: string;
   storeColor: string;
   thread_id?: string;
+  direction?: 'inbound' | 'outbound';
+  recipient?: string;
 }
 
 interface EmailListItemProps {
@@ -85,7 +87,12 @@ const EmailListItem: React.FC<EmailListItemProps> = ({ email, threadSubject, onC
           </p>
         </div>
         <p className="text-xs text-gray-500 truncate mt-1">
-          <span className="font-medium">{email.from}</span> - {email.snippet}
+          <span className="font-medium">
+            {email.direction === 'outbound' 
+              ? `To: ${email.recipient}` 
+              : `From: ${email.from}`
+            }
+          </span> - {email.snippet}
         </p>
       </div>
       

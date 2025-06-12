@@ -49,6 +49,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import AcceptInvitation from './pages/AcceptInvitation';
 import NotFound from './pages/NotFound';
+import CustomerTickets from './pages/CustomerTickets';
 
 function App() {
   return (
@@ -84,6 +85,9 @@ function App() {
                   
                   {/* Ticket creation route */}
                   <Route path="create-ticket/:storeId" element={<CreateTicket />} />
+                  
+                  {/* Customer tickets overview route */}
+                  <Route path="customer/:customerEmail/tickets" element={<CustomerTickets />} />
                   
                   {/* Configuration and management pages */}
                   <Route path="connections" element={<Connections />} />

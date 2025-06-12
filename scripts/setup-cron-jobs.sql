@@ -18,13 +18,12 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO postgres;
 -- 2. Environment Configuration
 -- ============================================
 
--- Replace these variables with your actual values:
--- YOUR_SUPABASE_URL: Your Supabase project URL
--- YOUR_SERVICE_ROLE_KEY: Your service role key from Supabase dashboard
+-- ✅ CONFIGURED: Project URL and Service Key
+-- Supabase Project URL: https://vjkofswgtffzyeuiainf.supabase.co
+-- ⚠️  Service Role Key: You need to manually replace YOUR_SERVICE_ROLE_KEY below
+-- Get your service role key from: Supabase Dashboard → Settings → API → service_role key
 
--- ⚠️  IMPORTANT: Replace these placeholders before running!
--- Example: https://abcdefghijklmnop.supabase.co
--- Example service key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+-- 🔐 SECURITY NOTE: Service role key has admin privileges - keep secure!
 
 -- ============================================
 -- 3. Daily Cleanup Operations
@@ -36,9 +35,9 @@ SELECT cron.schedule(
     '0 2 * * *', -- Daily at 2:00 AM UTC
     $$
     SELECT net.http_post(
-        url := 'YOUR_SUPABASE_URL/functions/v1/cleanup-attachments',
+        url := 'https://vjkofswgtffzyeuiainf.supabase.co/functions/v1/cleanup-attachments',
         headers := jsonb_build_object(
-            'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY',
+            'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODAwMDczNiwiZXhwIjoyMDYzNTc2NzM2fQ.z6gMgfKm6aZn0TLdF1vP8khSEW-btrJEBOpLIl7oTVQ',
             'Content-Type', 'application/json'
         ),
         body := jsonb_build_object(
@@ -57,9 +56,9 @@ SELECT cron.schedule(
     '30 2 * * *', -- Daily at 2:30 AM UTC
     $$
     SELECT net.http_post(
-        url := 'YOUR_SUPABASE_URL/functions/v1/cleanup-attachments',
+        url := 'https://vjkofswgtffzyeuiainf.supabase.co/functions/v1/cleanup-attachments',
         headers := jsonb_build_object(
-            'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY',
+            'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODAwMDczNiwiZXhwIjoyMDYzNTc2NzM2fQ.z6gMgfKm6aZn0TLdF1vP8khSEW-btrJEBOpLIl7oTVQ',
             'Content-Type', 'application/json'
         ),
         body := jsonb_build_object(
@@ -82,9 +81,9 @@ SELECT cron.schedule(
     '0 3 * * 0', -- Weekly on Sunday at 3:00 AM UTC
     $$
     SELECT net.http_post(
-        url := 'YOUR_SUPABASE_URL/functions/v1/cleanup-attachments',
+        url := 'https://vjkofswgtffzyeuiainf.supabase.co/functions/v1/cleanup-attachments',
         headers := jsonb_build_object(
-            'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY',
+            'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODAwMDczNiwiZXhwIjoyMDYzNTc2NzM2fQ.z6gMgfKm6aZn0TLdF1vP8khSEW-btrJEBOpLIl7oTVQ',
             'Content-Type', 'application/json'
         ),
         body := jsonb_build_object(
@@ -136,9 +135,9 @@ SELECT cron.schedule(
     '0 * * * *', -- Every hour at minute 0
     $$
     SELECT net.http_post(
-        url := 'YOUR_SUPABASE_URL/functions/v1/health-check',
+        url := 'https://vjkofswgtffzyeuiainf.supabase.co/functions/v1/health-check',
         headers := jsonb_build_object(
-            'Authorization', 'Bearer YOUR_SERVICE_ROLE_KEY',
+            'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqa29mc3dndGZmenlldWlhaW5mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0ODAwMDczNiwiZXhwIjoyMDYzNTc2NzM2fQ.z6gMgfKm6aZn0TLdF1vP8khSEW-btrJEBOpLIl7oTVQ',
             'Content-Type', 'application/json'
         ),
         body := jsonb_build_object(
@@ -349,9 +348,9 @@ BEGIN
     RAISE NOTICE '- Monthly reports: 1st day 5:00 AM UTC';
     RAISE NOTICE '- DB maintenance: Sunday 5:00 AM UTC';
     RAISE NOTICE '';
-    RAISE NOTICE '⚠️  IMPORTANT: Replace placeholder URLs and keys!';
-    RAISE NOTICE '   - YOUR_SUPABASE_URL: Your actual Supabase project URL';
-    RAISE NOTICE '   - YOUR_SERVICE_ROLE_KEY: Your actual service role key';
+    RAISE NOTICE '✅ CONFIGURED: Project URL updated to https://vjkofswgtffzyeuiainf.supabase.co';
+    RAISE NOTICE '✅ FULLY CONFIGURED: Service role key has been set';
+    RAISE NOTICE '🔐 SECURITY: Service role key configured with admin privileges';
     RAISE NOTICE '';
     RAISE NOTICE '🔍 Monitoring Commands:';
     RAISE NOTICE '   - Check status: SELECT * FROM get_cron_job_status();';

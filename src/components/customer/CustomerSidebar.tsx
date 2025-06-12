@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Phone, Mail, ShoppingBag, Calendar, ExternalLink, Loader2, Package, AlertTriangle, MapPin } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { format } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
 
 interface CustomerSidebarProps {
   email: {
@@ -17,6 +18,7 @@ const supabase = createClient(
 );
 
 const CustomerSidebar: React.FC<CustomerSidebarProps> = ({ email }) => {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customerData, setCustomerData] = useState<any>(null);
@@ -102,6 +104,12 @@ const CustomerSidebar: React.FC<CustomerSidebarProps> = ({ email }) => {
   const customer = store.customer;
   const orders = store.orders;
 
+  // Handle customer name click to navigate to tickets page
+  const handleCustomerClick = () => {
+    const encodedEmail = encodeURIComponent(customer.email);
+    navigate(`/customer/${encodedEmail}/tickets`);
+  };
+
   return (
     <div className="h-full overflow-y-auto">
       {/* Customer header */}
@@ -111,7 +119,11 @@ const CustomerSidebar: React.FC<CustomerSidebarProps> = ({ email }) => {
             <User size={20} className="text-gray-600" />
           </div>
           <div>
-            <h3 className="text-lg font-medium text-gray-900">
+            <h3 
+              className="text-lg font-medium text-gray-900 cursor-pointer hover:text-blue-600 transition-colors"
+              onClick={handleCustomerClick}
+              title="View all tickets for this customer"
+            >
               {customer.firstName} {customer.lastName}
             </h3>
             <div className="flex items-center">

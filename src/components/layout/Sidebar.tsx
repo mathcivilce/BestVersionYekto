@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { X, Inbox, Settings, LayoutDashboard, Mail, ShoppingBag, ChevronDown, ChevronRight, FileText, Users } from 'lucide-react';
+import { X, Inbox, Settings, LayoutDashboard, Mail, ShoppingBag, ChevronDown, ChevronRight, FileText, Users, Ticket } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useInbox } from '../../contexts/InboxContext';
 
@@ -14,6 +14,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
   const { user, logout } = useAuth();
   const { stores } = useInbox();
   const [inboxOpen, setInboxOpen] = useState(true);
+  const [openTicketsOpen, setOpenTicketsOpen] = useState(false);
   const [workflowsOpen, setWorkflowsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   
@@ -35,6 +36,15 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
       label: 'Inbox',
       submenu: emailStores.map(store => ({
         path: `/inbox/${store.id}`,
+        label: store.name
+      }))
+    },
+    { 
+      path: '/open-tickets',
+      icon: <Ticket size={20} />,
+      label: 'Open Tickets',
+      submenu: emailStores.map(store => ({
+        path: `/open-tickets/${store.id}`,
         label: store.name
       }))
     },
@@ -94,6 +104,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
                     <button
                       onClick={() => {
                         if (item.path === '/inbox') setInboxOpen(!inboxOpen);
+                        if (item.path === '/open-tickets') setOpenTicketsOpen(!openTicketsOpen);
                         if (item.path === '/workflows') setWorkflowsOpen(!workflowsOpen);
                         if (item.path === '/settings') setSettingsOpen(!settingsOpen);
                       }}
@@ -107,13 +118,13 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
                         {item.icon}
                       </span>
                       <span className="ml-3 flex-1 text-left">{item.label}</span>
-                      {(item.path === '/inbox' ? inboxOpen : (item.path === '/workflows' ? workflowsOpen : settingsOpen)) ? (
+                      {(item.path === '/inbox' ? inboxOpen : (item.path === '/open-tickets' ? openTicketsOpen : (item.path === '/workflows' ? workflowsOpen : settingsOpen))) ? (
                         <ChevronDown size={16} className="text-sidebar-text" />
                       ) : (
                         <ChevronRight size={16} className="text-sidebar-text" />
                       )}
                     </button>
-                    {((item.path === '/inbox' && inboxOpen) || (item.path === '/workflows' && workflowsOpen) || (item.path === '/settings' && settingsOpen)) && (
+                    {((item.path === '/inbox' && inboxOpen) || (item.path === '/open-tickets' && openTicketsOpen) || (item.path === '/workflows' && workflowsOpen) || (item.path === '/settings' && settingsOpen)) && (
                       <ul className="pl-8 space-y-1">
                         {item.path === '/inbox' && (
                           <li>

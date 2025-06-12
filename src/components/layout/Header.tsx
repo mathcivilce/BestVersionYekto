@@ -13,6 +13,7 @@ const Header: React.FC = () => {
     if (path.includes('/dashboard')) return 'Dashboard';
     if (path.includes('/inbox') && !path.includes('/inbox/')) return 'Inbox';
     if (path.includes('/inbox/')) return 'Email Details';
+    if (path.includes('/open-tickets')) return 'Open Tickets';
     if (path.includes('/connections')) return 'Email Integrations';
     if (path.includes('/settings')) return 'Settings';
     return 'Support Hub';

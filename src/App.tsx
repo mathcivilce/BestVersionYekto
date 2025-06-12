@@ -43,6 +43,7 @@ import EditTemplate from './pages/EditTemplate';
 import CreateTicket from './pages/CreateTicket';
 import TeamManagement from './pages/TeamManagement';
 import StorageDashboard from './pages/StorageDashboard';
+import OpenTickets from './pages/OpenTickets';
 
 // Authentication pages (public routes)
 import Login from './pages/Login';
@@ -82,6 +83,9 @@ function App() {
                   <Route path="inbox" element={<Inbox />} />
                   <Route path="inbox/:storeId" element={<Inbox />} />
                   <Route path="inbox/email/:emailId" element={<EmailDetails />} />
+                  
+                  {/* Open Tickets routes - support store-specific views only */}
+                  <Route path="open-tickets/:storeId" element={<OpenTickets />} />
                   
                   {/* Ticket creation route */}
                   <Route path="create-ticket/:storeId" element={<CreateTicket />} />

@@ -9,11 +9,13 @@ import { getThreadSubject } from '../../utils/email';
 
 interface EmailListProps {
   storeId?: string;
+  defaultStatusFilter?: string;
+  hideStatusFilter?: boolean;
 }
 
 const ITEMS_PER_PAGE = 20;
 
-const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
+const EmailList: React.FC<EmailListProps> = ({ storeId, defaultStatusFilter, hideStatusFilter = false }) => {
   const { emails, stores, loading, error, syncEmails, refreshEmails } = useInbox();
   const [syncing, setSyncing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -21,7 +23,7 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
   const [sortBy, setSortBy] = useState('date');
   const [sortDirection, setSortDirection] = useState('desc');
   const [selectedStore, setSelectedStore] = useState('all');
-  const [selectedStatus, setSelectedStatus] = useState('all');
+  const [selectedStatus, setSelectedStatus] = useState(defaultStatusFilter || 'all');
   const [currentPage, setCurrentPage] = useState(1);
   const [dateRange, setDateRange] = useState({
     from: '',
@@ -220,7 +222,7 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
   if (filteredEmails.length === 0) {
     return (
       <div className="h-full flex flex-col">
-        {!storeId && (
+        {!storeId && !hideStatusFilter && (
           <EmailFilter 
             selectedStore={selectedStore}
             setSelectedStore={setSelectedStore}
@@ -271,7 +273,7 @@ const EmailList: React.FC<EmailListProps> = ({ storeId }) => {
 
   return (
     <div className="h-full flex flex-col">
-      {!storeId && (
+      {!storeId && !hideStatusFilter && (
         <EmailFilter 
           selectedStore={selectedStore}
           setSelectedStore={setSelectedStore}

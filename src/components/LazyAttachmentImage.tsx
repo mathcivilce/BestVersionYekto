@@ -21,7 +21,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
-import { Loader2, ImageIcon, AlertCircle, Download, X } from 'lucide-react';
+import { Loader2, ImageIcon, AlertCircle, X } from 'lucide-react';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -70,14 +70,12 @@ interface LazyAttachmentImageProps {
   className?: string;
   style?: React.CSSProperties;
   onClick?: () => void;
-  showDownloadButton?: boolean;
   maxWidth?: number;
   maxHeight?: number;
 }
 
 interface LoadingState {
   status: 'idle' | 'loading' | 'loaded' | 'error' | 'not-found';
-  showSpinner?: boolean;     // Only show spinner after delay
   errorMessage?: string;
   cacheLevel?: 'L1' | 'L2' | 'MISS';
 }
@@ -89,7 +87,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   className = '',
   style,
   onClick,
-  showDownloadButton = false,
   maxWidth = 600,
   maxHeight = 400
 }) => {
@@ -99,7 +96,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const spinnerTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Effect to start loading when component mounts or props change
   useEffect(() => {
@@ -110,35 +106,24 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
 
     loadAttachmentImage();
 
-    // Cleanup function to cancel ongoing requests and timeouts
+    // Cleanup function to cancel ongoing requests
     return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
-      }
-      if (spinnerTimeoutRef.current) {
-        clearTimeout(spinnerTimeoutRef.current);
       }
     };
   }, [cid, attachmentId]);
 
   const loadAttachmentImage = async () => {
     try {
-      setLoadingState({ status: 'loading', showSpinner: false });
+      setLoadingState({ status: 'loading' });
 
-      // Cancel any existing request and timeout
+      // Cancel any existing request
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      if (spinnerTimeoutRef.current) {
-        clearTimeout(spinnerTimeoutRef.current);
-      }
       
       abortControllerRef.current = new AbortController();
-
-      // Set up delayed spinner with shorter delay for better UX
-      spinnerTimeoutRef.current = setTimeout(() => {
-        setLoadingState(prev => ({ ...prev, showSpinner: true }));
-      }, 200); // Reduced from 300ms to 200ms
 
       // Use shared session to avoid multiple auth calls
       const session = await getSharedSession();
@@ -198,11 +183,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       // Preload the image to ensure it's fully loaded before displaying
       const img = new Image();
       img.onload = () => {
-        // Clear the spinner timeout since we're done loading
-        if (spinnerTimeoutRef.current) {
-          clearTimeout(spinnerTimeoutRef.current);
-        }
-        
         setImageSrc(objectUrl);
         setImageSize({ width: img.naturalWidth, height: img.naturalHeight });
         setLoadingState({ 
@@ -213,9 +193,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       
       img.onerror = () => {
         URL.revokeObjectURL(objectUrl);
-        if (spinnerTimeoutRef.current) {
-          clearTimeout(spinnerTimeoutRef.current);
-        }
         setLoadingState({ 
           status: 'error', 
           errorMessage: 'Failed to load image data' 
@@ -225,11 +202,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
       img.src = objectUrl;
 
     } catch (error: any) {
-      // Clear the spinner timeout on error
-      if (spinnerTimeoutRef.current) {
-        clearTimeout(spinnerTimeoutRef.current);
-      }
-      
       if (error.name === 'AbortError') {
         // Request was cancelled, don't update state
         return;
@@ -287,34 +259,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
     }
   };
 
-  const handleDownloadClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    handleDownload();
-  };
-
   const handleModalClose = () => {
     setIsModalOpen(false);
-  };
-
-  const handleDownload = async () => {
-    if (!imageSrc) return;
-    
-    try {
-      const response = await fetch(imageSrc);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = alt || 'attachment';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Download failed:', error);
-    }
   };
 
   const displaySize = calculateDisplaySize();
@@ -347,22 +293,6 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
           <X className="w-6 h-6" />
         </button>
 
-        {/* Download button in modal */}
-        {showDownloadButton && (
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleDownload();
-            }}
-            className="absolute top-6 left-6 p-3 bg-white/20 text-white rounded-full hover:bg-white/30 transition-colors"
-            style={{ zIndex: 1000000 }}
-            title="Download attachment"
-          >
-            <Download className="w-6 h-6" />
-          </button>
-        )}
-
         {/* Backdrop click to close */}
         <div 
           className="absolute inset-0 cursor-pointer" 
@@ -370,19 +300,17 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
         />
 
         {/* Image container - centered and responsive */}
-        <div className="relative flex items-center justify-center w-full h-full p-8">
-          <img
-            src={imageSrc}
-            alt={alt}
-            className="max-w-full max-h-full object-contain"
-            style={{
-              maxWidth: 'calc(100vw - 4rem)',
-              maxHeight: 'calc(100vh - 4rem)',
-              borderRadius: '8px'
-            }}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
+        <img
+          src={imageSrc}
+          alt={alt}
+          className="max-w-full max-h-full object-contain"
+          style={{
+            maxWidth: 'calc(100vw - 4rem)',
+            maxHeight: 'calc(100vh - 4rem)',
+            borderRadius: '8px'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
       </div>
     );
 
@@ -414,34 +342,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
   switch (loadingState.status) {
     case 'idle':
     case 'loading':
-      return (
-        <>
-          <div 
-            className={`relative flex items-center justify-center bg-gray-100 border border-gray-200 rounded-lg overflow-hidden ${className}`}
-            style={{ 
-              width: displaySize.width, 
-              height: displaySize.height, 
-              minWidth: '120px', 
-              minHeight: '80px',
-              ...style 
-            }}
-          >
-            {/* Gray placeholder for layout preservation */}
-            <div className="absolute inset-0 bg-gradient-to-br from-gray-50 to-gray-100" />
-            
-            {/* Only show spinner after delay - now smaller and more subtle */}
-            {loadingState.showSpinner && (
-              <div className="relative z-10 flex items-center justify-center">
-                <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
-                {/* Removed text and cache info for cleaner look */}
-              </div>
-            )}
-          </div>
-          
-          {/* Portal-based modal */}
-          <ImageModal />
-        </>
-      );
+      // Option 1: Completely Hidden Until Ready - No placeholder, no visual loading indicator
+      return null;
 
     case 'loaded':
       return (
@@ -453,23 +355,14 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
               alt={alt}
               style={{
                 ...displaySize,
-                objectFit: 'contain'
+                objectFit: 'contain',
+                opacity: 0,
+                animation: 'fadeInImage 0.3s ease-out forwards'
               }}
               className="rounded-lg shadow-sm cursor-pointer hover:shadow-md transition-shadow block"
               onClick={handleImageClick}
               onDragStart={(e) => e.preventDefault()}
             />
-            
-            {/* Download button - positioned in bottom-left corner */}
-            {showDownloadButton && (
-              <button
-                onClick={handleDownloadClick}
-                className="absolute bottom-2 left-2 p-2 bg-black/70 text-white rounded-full hover:bg-black/80 transition-colors z-10"
-                title="Download attachment"
-              >
-                <Download className="w-4 h-4" />
-              </button>
-            )}
             
             {/* Cache level indicator (subtle, dev-friendly) */}
             {loadingState.cacheLevel && process.env.NODE_ENV === 'development' && (
@@ -489,8 +382,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
         <div 
           className={`flex items-center justify-center bg-yellow-50 border border-yellow-200 rounded-lg ${className}`}
           style={{ 
-            width: displaySize.width, 
-            height: displaySize.height, 
+            width: '200px', 
+            height: '120px', 
             minWidth: '120px', 
             minHeight: '80px',
             ...style 
@@ -511,8 +404,8 @@ export const LazyAttachmentImage: React.FC<LazyAttachmentImageProps> = ({
         <div 
           className={`flex items-center justify-center bg-red-50 border border-red-200 rounded-lg ${className}`}
           style={{ 
-            width: displaySize.width, 
-            height: displaySize.height, 
+            width: '200px', 
+            height: '120px', 
             minWidth: '120px', 
             minHeight: '80px',
             ...style 

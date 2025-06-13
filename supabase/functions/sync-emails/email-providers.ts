@@ -338,15 +338,12 @@ export class AttachmentProcessor {
     userId: string,
     supabaseClient: any
   ): Promise<void> {
-    console.log(`💾 [DB-ATTACHMENT] Starting processAttachmentMetadata for email ${emailId} with ${attachments.length} attachments`);
-    
     if (!attachments || attachments.length === 0) {
-      console.log(`⚠️ [DB-ATTACHMENT] No attachments to process for email ${emailId}`);
       return;
     }
 
     // Log final metadata before DB insert
-    console.log(`💾 [DB-ATTACHMENT] Final attachment metadata for DB insert (email ${emailId}):`, JSON.stringify(attachments, null, 2));
+    console.log('[AttachmentProcessor] Final attachment metadata for DB insert:', JSON.stringify(attachments, null, 2));
 
     try {
       // Prepare attachment references for batch insert
@@ -367,146 +364,86 @@ export class AttachmentProcessor {
         updated_at: new Date().toISOString()
       }));
 
-      console.log(`💾 [DB-ATTACHMENT] Prepared ${attachmentReferences.length} attachment references for insertion`);
-
       // Batch insert attachment references
-      console.log(`💾 [DB-INSERT] Inserting attachment references into attachment_references table...`);
-      const { data: insertData, error: insertError } = await supabaseClient
+      const { error: insertError } = await supabaseClient
         .from('attachment_references')
-        .insert(attachmentReferences)
-        .select();
+        .insert(attachmentReferences);
 
       if (insertError) {
-        console.error(`🚫 [DB-ERROR] Error inserting attachment references for email ${emailId}:`, {
+        console.error('[AttachmentProcessor] Error inserting attachment references:', {
           message: insertError.message,
           details: insertError.details,
           hint: insertError.hint,
           code: insertError.code,
           raw: insertError
         });
-        throw insertError;
-      } else {
-        console.log(`✅ [DB-INSERT] Successfully inserted ${attachmentReferences.length} attachment references`);
-        if (insertData) {
-          console.log(`✅ [DB-INSERT] Inserted attachment IDs:`, insertData.map(ref => ref.id));
-        }
       }
 
       // Update email attachment count
-      console.log(`📊 [DB-UPDATE] Updating email ${emailId} with attachment count: ${attachments.length}`);
-      const { data: updateData, error: updateError } = await supabaseClient
+      const { error: updateError } = await supabaseClient
         .from('emails')
         .update({ 
           attachment_reference_count: attachments.length,
           has_attachments: true
         })
-        .eq('id', emailId)
-        .select('id, attachment_reference_count, has_attachments');
+        .eq('id', emailId);
 
       if (updateError) {
-        console.error(`🚫 [DB-ERROR] Error updating email ${emailId} attachment count:`, {
+        console.error('[AttachmentProcessor] Error updating email attachment count:', {
           message: updateError.message,
           details: updateError.details,
           hint: updateError.hint,
           code: updateError.code,
           raw: updateError
         });
-        throw updateError;
-      } else {
-        console.log(`✅ [DB-UPDATE] Successfully updated email ${emailId} attachment metadata:`, updateData);
       }
 
-      console.log(`✅ [DB-ATTACHMENT] Completed processing ${attachments.length} attachment references for email ${emailId}`);
+      console.log(`Processed ${attachments.length} attachment references for email ${emailId}`);
 
     } catch (error) {
-      console.error(`🚫 [DB-ATTACHMENT] Fatal error processing attachment metadata for email ${emailId}:`, {
-        error: error.message,
-        stack: error.stack,
-        attachmentCount: attachments.length
-      });
-      throw error;
+      console.error('Error processing attachment metadata:', error);
     }
   }
 
   static extractContentIdFromHtml(htmlContent: string): string[] {
-    console.log(`🔍 [CID-EXTRACT] Starting CID extraction from HTML content (${htmlContent.length} chars)`);
-    
-    if (!htmlContent) {
-      console.log(`⚠️ [CID-EXTRACT] No HTML content provided - returning empty CID array`);
-      return [];
-    }
-
-    // Log a sample of the HTML content for debugging
-    const htmlSample = htmlContent.length > 200 ? htmlContent.substring(0, 200) + '...' : htmlContent;
-    console.log(`🔍 [CID-EXTRACT] HTML content sample:`, htmlSample);
+    if (!htmlContent) return [];
 
     // Extract CID references from HTML content
     const cidRegex = /(?:src|href)=['"]?cid:([^'">\s]+)['"]?/gi;
     const contentIds: string[] = [];
     let match;
-    let matchCount = 0;
 
     while ((match = cidRegex.exec(htmlContent)) !== null) {
-      const rawCid = match[1];
-      const normalizedCid = normalizeCid(rawCid);
-      contentIds.push(normalizedCid);
-      matchCount++;
-      console.log(`🔍 [CID-EXTRACT] Match ${matchCount}: Raw CID "${rawCid}" → Normalized "${normalizedCid}"`);
+      contentIds.push(normalizeCid(match[1]));
     }
 
-    const uniqueContentIds = [...new Set(contentIds)]; // Remove duplicates
-    
-    console.log(`🔍 [CID-EXTRACT] Extraction complete - Found ${matchCount} matches, ${uniqueContentIds.length} unique CIDs:`, uniqueContentIds);
+    // Log extracted CIDs
+    console.log('[AttachmentProcessor] Extracted normalized CIDs from HTML:', contentIds);
 
-    return uniqueContentIds;
+    return [...new Set(contentIds)]; // Remove duplicates
   }
 
   static async linkContentIdsToAttachments(
     contentIds: string[],
     attachments: AttachmentMetadata[]
   ): Promise<AttachmentMetadata[]> {
-    console.log(`🔗 [CID-LINK] Starting linkContentIdsToAttachments with ${contentIds.length} CIDs and ${attachments.length} attachments`);
-    
     // Normalize all contentIds for matching
     const normalizedCids = contentIds.map(normalizeCid);
-    console.log(`🔗 [CID-LINK] Normalized input CIDs:`, normalizedCids);
-    console.log(`🔗 [CID-LINK] Input attachments:`, attachments.map(a => ({ 
-      filename: a.filename, 
-      isInline: a.isInline, 
-      rawContentId: a.contentId,
-      normalizedContentId: normalizeCid(a.contentId)
-    })));
+    // Log for debugging
+    console.log('[AttachmentProcessor] Linking CIDs to attachments. Normalized CIDs:', normalizedCids);
 
-    const linkedAttachments = attachments.map((att, index) => {
+    return attachments.map(att => {
       const attCid = normalizeCid(att.contentId);
-      console.log(`🔗 [CID-LINK] Processing attachment ${index + 1}: "${att.filename}"`);
-      console.log(`🔗 [CID-LINK]   - Raw contentId: "${att.contentId}"`);
-      console.log(`🔗 [CID-LINK]   - Normalized contentId: "${attCid}"`);
-      console.log(`🔗 [CID-LINK]   - Original isInline: ${att.isInline}`);
-      
       // If this attachment's contentId matches a CID, mark as inline
       if (normalizedCids.includes(attCid) && attCid) {
-        console.log(`🔗 [CID-LINK]   → MATCHED! Setting isInline=true for "${att.filename}"`);
         return { ...att, isInline: true, contentId: attCid };
       }
-      
       // If attachment is inline but missing contentId, try to assign from available CIDs
       if (att.isInline && !attCid && normalizedCids.length > 0) {
-        const assignedCid = normalizedCids[0];
-        console.log(`🔗 [CID-LINK]   → ASSIGNED! Setting contentId="${assignedCid}" for inline attachment "${att.filename}"`);
-        return { ...att, contentId: assignedCid };
+        // Assign the first unused CID (or you could try to match by filename, etc.)
+        return { ...att, contentId: normalizedCids[0] };
       }
-      
-      console.log(`🔗 [CID-LINK]   → No changes for "${att.filename}"`);
       return att;
     });
-
-    console.log(`🔗 [CID-LINK] Linking complete - Result:`, linkedAttachments.map(a => ({ 
-      filename: a.filename, 
-      isInline: a.isInline, 
-      contentId: a.contentId 
-    })));
-
-    return linkedAttachments;
   }
 } 

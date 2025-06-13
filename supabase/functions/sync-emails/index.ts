@@ -15,6 +15,10 @@
  * ✅ Rate limit management with exponential backoff
  * ✅ Database overwhelm protection with safety limits
  * ✅ Detailed debugging and error classification
+ * ✅ SYNTHETIC ATTACHMENT PROCESSING for orphaned CIDs
+ * ✅ ENHANCED STRATEGY 1-3 with comprehensive debugging
+ * ✅ EDGE CASE PROTECTION for Strategy 2 conflicts
+ * ✅ ADVANCED CID MATCHING with field analysis
  * 
  * THREADING EVOLUTION:
  * - Phase 1: Basic Microsoft conversationId (unreliable)
@@ -39,7 +43,20 @@ import {
   createEmailProvider, 
   getProviderTypeFromPlatform, 
   AttachmentProcessor 
-} from "../_shared/email-providers.ts";
+} from "../_shared/email-providers-sync-emails.ts";
+
+// NEW: Import synthetic attachment processing capabilities
+import { 
+  createEmailProvider as createSyncEmailProvider, 
+  getProviderTypeFromPlatform as getSyncProviderType, 
+  AttachmentProcessor as SyncAttachmentProcessor 
+} from "../_shared/email-providers-sync-emails.ts";
+import { CidDetectionEngine } from "../_shared/cid-detection-engine.ts";
+import { SyntheticAttachmentProcessor } from "../_shared/synthetic-attachment-processor.ts";
+import { 
+  initializeGlobalMonitoring, 
+  SyntheticMonitoring 
+} from "../_shared/monitoring-synthetic.ts";
 
 // ====================================================================================================
 // CONFIGURATION AND CONSTANTS
@@ -130,6 +147,99 @@ async function retryOperation<T>(
       // Exponential backoff: double the delay for next retry
       return retryOperation(operation, retries - 1, delay * 2);
     }
+    throw error;
+  }
+}
+
+// ====================================================================================================
+// SYNTHETIC ATTACHMENT PROCESSING FUNCTION
+// ====================================================================================================
+
+/**
+ * Process synthetic attachments for orphaned CIDs in email batch
+ * This function detects emails with CID references but no attachment metadata
+ * and creates synthetic attachment references to enable proper image display
+ * 
+ * @param batch - Array of email records from current batch
+ * @param supabase - Supabase client instance
+ * @param userId - User ID for database operations
+ * @param batchNumber - Current batch number for logging
+ */
+async function processSyntheticAttachments(
+  batch: any[], 
+  supabase: any, 
+  userId: string, 
+  batchNumber: number
+): Promise<void> {
+  console.log(`🔧 [SYNTHETIC] Processing batch ${batchNumber} with ${batch.length} emails for orphaned CIDs`);
+
+  try {
+    // Initialize synthetic processing components
+    const monitoring = initializeGlobalMonitoring(supabase);
+    const cidEngine = new CidDetectionEngine(supabase);
+    const syntheticProcessor = new SyntheticAttachmentProcessor(
+      supabase, 
+      monitoring,
+      {
+        maxSyntheticPerEmail: 3,        // Limit to 3 synthetic attachments per email
+        batchSize: 10,                  // Process 10 emails at a time
+        enableValidation: true,         // Enable validation
+        persistToDatabase: true,        // Save to database
+        skipLowConfidence: true,        // Skip low-confidence CIDs
+        confidenceThreshold: 50         // 50% confidence minimum
+      }
+    );
+
+    // Convert batch to EmailRecord format for CID detection
+    const emailRecords = batch.map(email => ({
+      id: email.id,
+      content: email.content || '',
+      graph_id: email.graph_id,
+      has_attachments: email.has_attachments || false,
+      attachment_reference_count: email.attachment_reference_count || 0,
+      subject: email.subject,
+      created_at: email.created_at
+    }));
+
+    // Detect orphaned CIDs in the batch
+    const detectionOperationId = monitoring.startOperation('detection');
+    const { orphanedEmails, stats } = await cidEngine.detectOrphanedCidsBatch(emailRecords);
+    
+    // Update monitoring with detection results
+    monitoring.updateOperation(detectionOperationId, {
+      emailsProcessed: emailRecords.length,
+      syntheticAttachmentsCreated: 0,
+      resolutionAttempts: 0,
+      successfulResolutions: 0,
+      errors: 0
+    });
+    monitoring.completeOperation(detectionOperationId);
+    monitoring.recordCidDetection(stats);
+
+    // Process orphaned emails if any found
+    if (orphanedEmails.length > 0) {
+      console.log(`🔧 [SYNTHETIC] Found ${orphanedEmails.length} emails with orphaned CIDs in batch ${batchNumber}`);
+      
+      const batchResult = await syntheticProcessor.processBatch(orphanedEmails);
+      
+      console.log(`✅ [SYNTHETIC] Batch ${batchNumber} processing complete:`, {
+        totalEmails: batchResult.totalEmails,
+        syntheticAttachments: batchResult.syntheticAttachmentsCreated,
+        errors: batchResult.errors.length,
+        duration: `${batchResult.processingTimeMs}ms`
+      });
+
+      // Log session summary
+      monitoring.logSessionSummary();
+    } else {
+      console.log(`ℹ️ [SYNTHETIC] No orphaned CIDs found in batch ${batchNumber}`);
+    }
+
+  } catch (error: any) {
+    console.error(`🚫 [SYNTHETIC] Error processing synthetic attachments for batch ${batchNumber}:`, {
+      error: error.message,
+      stack: error.stack
+    });
     throw error;
   }
 }
@@ -644,63 +754,13 @@ serve(async (req) => {
         const universalThreadId = threadResult || msg.message_id_header || msg.microsoft_conversation_id || msg.conversationId;
 
         /**
-         * SMART REFERENCE ARCHITECTURE: Extract attachment metadata
-         * Only extract metadata, not content - content is loaded on-demand
+         * Build email record for database insertion
+         * All metadata is preserved for full email reconstruction
          */
         let attachmentCount = 0;
         const emailId = crypto.randomUUID(); // Generate email ID for attachment linking
         
-        if (msg.hasAttachments || msg.has_attachments) {
-          try {
-            // Extract attachment metadata (not content - just metadata!)
-            const attachmentMetadata = await emailProvider.extractAttachmentMetadata(msg.id);
-            
-            if (attachmentMetadata && attachmentMetadata.length > 0) {
-              console.log(`Found ${attachmentMetadata.length} attachments for email ${msg.id}`);
-              
-              // Extract content IDs from email HTML to link with attachments
-              const contentIds = AttachmentProcessor.extractContentIdFromHtml(msg.body?.content || '');
-              
-              // Link content IDs to attachments for inline image detection
-              const linkedAttachments = await AttachmentProcessor.linkContentIdsToAttachments(
-                contentIds, 
-                attachmentMetadata
-              );
-              
-              attachmentCount = linkedAttachments.length;
-              console.log(`Found ${attachmentCount} attachment references (will process after email save)`);
-              
-              /**
-               * Store attachment metadata for processing after email save
-               * Use setTimeout to ensure email is saved first (foreign key constraint)
-               */
-              if (linkedAttachments.length > 0) {
-                setTimeout(async () => {
-                  try {
-                    await AttachmentProcessor.processAttachmentMetadata(
-                      linkedAttachments,
-                      emailId,
-                      store.user_id,
-                      supabase
-                    );
-                    console.log(`Successfully processed ${linkedAttachments.length} attachment references`);
-                  } catch (attachmentError) {
-                    console.error('Error saving attachment references:', attachmentError);
-                  }
-                }, 1000); // 1 second delay to ensure email is saved first
-              }
-            }
-          } catch (attachmentError) {
-            console.error('Error extracting attachments (non-fatal):', attachmentError);
-            // Don't fail email processing if attachment extraction fails
-          }
-        }
-
-        /**
-         * Build email record for database insertion
-         * All metadata is preserved for full email reconstruction
-         */
-        emailsToSave.push({
+        const emailRecord = {
           id: emailId, // Use generated ID for attachment linking
           graph_id: msg.id,
           thread_id: universalThreadId, // Universal thread ID using RFC2822 standards
@@ -726,8 +786,83 @@ serve(async (req) => {
           in_reply_to_header: msg.in_reply_to_header,
           references_header: msg.references_header,
           conversation_root_id: universalThreadId,
-          processed_by_custom_threading: true
-        });
+          processed_by_custom_threading: true,
+          // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
+          direction: 'inbound',                                   // Incoming emails are always inbound during sync
+          recipient: toEmails                                      // Store the actual recipients (our store email)
+        };
+
+        /**
+         * SMART REFERENCE ARCHITECTURE: Extract attachment metadata
+         * Only extract metadata, not content - content is loaded on-demand
+         */
+        if (msg.hasAttachments || msg.has_attachments) {
+          console.log(`🔍 [ATTACHMENT-DEBUG] Processing email ${msg.id} - hasAttachments: ${msg.hasAttachments || msg.has_attachments}`);
+          
+          try {
+            // Extract attachment metadata (not content - just metadata!)
+            const attachmentMetadata = await emailProvider.extractAttachmentMetadata(msg.id);
+            
+            if (attachmentMetadata && attachmentMetadata.length > 0) {
+              console.log(`📎 [ATTACHMENT-DEBUG] Found ${attachmentMetadata.length} raw attachments for email ${msg.id}:`, 
+                JSON.stringify(attachmentMetadata.map(a => ({ 
+                  filename: a.filename, 
+                  contentType: a.contentType, 
+                  isInline: a.isInline, 
+                  contentId: a.contentId 
+                })), null, 2)
+              );
+              
+              // Extract content IDs from email HTML to link with attachments
+              console.log(`🔍 [CID-EXTRACTION] Extracting CIDs from email HTML body (length: ${(msg.body?.content || '').length} chars)`);
+              const contentIds = AttachmentProcessor.extractContentIdFromHtml(msg.body?.content || '');
+              console.log(`🔍 [CID-EXTRACTION] Raw extracted CIDs:`, contentIds);
+              
+              // Link content IDs to attachments for inline image detection
+              console.log(`🔗 [CID-LINKING] Linking ${contentIds.length} CIDs to ${attachmentMetadata.length} attachments`);
+              const linkedAttachments = await AttachmentProcessor.linkContentIdsToAttachments(
+                contentIds, 
+                attachmentMetadata
+              );
+              
+              console.log(`🔗 [CID-LINKING] Linked attachments result:`, 
+                JSON.stringify(linkedAttachments.map(a => ({ 
+                  filename: a.filename, 
+                  isInline: a.isInline, 
+                  contentId: a.contentId,
+                  normalizedCid: a.contentId 
+                })), null, 2)
+              );
+              
+              attachmentCount = linkedAttachments.length;
+              console.log(`✅ [ATTACHMENT-DEBUG] Found ${attachmentCount} attachment references (will process after email save)`);
+              
+              /**
+               * Store attachment metadata for processing after email save
+               * Store for batch processing after all emails are saved
+               */
+              if (linkedAttachments.length > 0) {
+                // Store attachment data for processing after email batch is saved
+                emailRecord.pending_attachments = linkedAttachments;
+                console.log(`📦 [ATTACHMENT-DEBUG] Stored ${linkedAttachments.length} pending attachments for email ${msg.id}`);
+              }
+              
+              // Update attachment counts in the email record
+              emailRecord.has_attachments = attachmentCount > 0;
+              emailRecord.attachment_reference_count = attachmentCount;
+              console.log(`📊 [ATTACHMENT-DEBUG] Email record updated - has_attachments: ${emailRecord.has_attachments}, count: ${emailRecord.attachment_reference_count}`);
+            } else {
+              console.log(`⚠️ [ATTACHMENT-DEBUG] Email ${msg.id} marked as having attachments but none found`);
+            }
+          } catch (attachmentError) {
+            console.error('🚫 [ATTACHMENT-ERROR] Error extracting attachments (non-fatal):', attachmentError);
+            // Don't fail email processing if attachment extraction fails
+          }
+        } else {
+          console.log(`ℹ️ [ATTACHMENT-DEBUG] Email ${msg.id} - no attachments to process`);
+        }
+
+        emailsToSave.push(emailRecord);
       }
 
       let savedCount = 0;
@@ -776,6 +911,49 @@ serve(async (req) => {
           savedCount += batch.length;
           console.log(`Successfully saved ${savedCount} of ${emailsToSave.length} emails`);
 
+          // Process attachments for this batch after emails are saved
+          console.log(`📎 [ATTACHMENT-BATCH] Processing attachments for batch ${batchNumber}`);
+          let attachmentProcessedCount = 0;
+          let attachmentErrorCount = 0;
+          
+          for (const email of batch) {
+            if (email.pending_attachments && email.pending_attachments.length > 0) {
+              console.log(`📎 [ATTACHMENT-PROCESSING] Starting processing for email ${email.id} with ${email.pending_attachments.length} attachments`);
+              
+              try {
+                await AttachmentProcessor.processAttachmentMetadata(
+                  email.pending_attachments,
+                  email.id,  // Use the actual email ID from the batch
+                  store.user_id,
+                  supabase
+                );
+                attachmentProcessedCount += email.pending_attachments.length;
+                console.log(`✅ [ATTACHMENT-SUCCESS] Successfully processed ${email.pending_attachments.length} attachment references for email ${email.id}`);
+              } catch (attachmentError) {
+                attachmentErrorCount += email.pending_attachments.length;
+                console.error(`🚫 [ATTACHMENT-ERROR] Error saving attachment references for email ${email.id}:`, {
+                  error: attachmentError.message,
+                  stack: attachmentError.stack,
+                  attachmentCount: email.pending_attachments.length,
+                  attachments: email.pending_attachments.map(a => ({ filename: a.filename, contentId: a.contentId }))
+                });
+                // Don't fail the entire batch if attachment processing fails
+              }
+            }
+          }
+          
+          console.log(`📊 [ATTACHMENT-BATCH-SUMMARY] Batch ${batchNumber} - Processed: ${attachmentProcessedCount}, Errors: ${attachmentErrorCount}`);
+
+          // NEW: PHASE 3 - SYNTHETIC ATTACHMENT PROCESSING
+          // Process orphaned CIDs after regular attachment processing
+          console.log(`🔧 [SYNTHETIC-BATCH] Starting orphaned CID detection for batch ${batchNumber}`);
+          try {
+            await processSyntheticAttachments(batch, supabase, store.user_id, batchNumber);
+          } catch (syntheticError) {
+            console.error(`🚫 [SYNTHETIC-ERROR] Error processing synthetic attachments for batch ${batchNumber}:`, syntheticError);
+            // Non-fatal error - continue processing
+          }
+
           // Wait between batches to avoid overwhelming the database
           if (i + BATCH_SIZE < emailsToSave.length) {
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -821,8 +999,18 @@ serve(async (req) => {
       ? ((conversationFetchSuccesses / conversationFetchAttempts) * 100).toFixed(1)
       : '100';
     
+    // Calculate attachment statistics
+    let totalAttachmentsProcessed = 0;
+    let emailsWithAttachments = 0;
+    for (const email of allEmails) {
+      if (email.hasAttachments || email.has_attachments) {
+        emailsWithAttachments++;
+      }
+    }
+    
     console.log('=== SYNC COMPLETED SUCCESSFULLY ===');
     console.log(`📧 Emails processed: ${allEmails.length}`);
+    console.log(`📎 Emails with attachments: ${emailsWithAttachments}`);
     console.log(`🧵 Emails with conversation metadata: ${conversationFetchAttempts}`);
     console.log(`✅ Universal threading processing: ${conversationFetchSuccesses}`);
     console.log(`❌ Microsoft conversation API calls: 0 (ELIMINATED)`);
@@ -830,6 +1018,7 @@ serve(async (req) => {
     console.log(`🚀 Sync strategy: Phase 3 - Universal RFC2822 threading system (Platform Independent)`);
     console.log(`⚡ Performance: ~70% faster (eliminated conversation API calls)`);
     console.log(`🎯 Threading: Superior internal notes system active`);
+    console.log(`📎 Attachment processing: Smart Reference Architecture with CID normalization`);
     console.log(`⏱️  Total duration: ${debugInfo.totalDuration}ms`);
     console.log('=== END SYNC STATISTICS ===');
 
@@ -841,6 +1030,7 @@ serve(async (req) => {
       JSON.stringify({ 
         success: true,
         emailsProcessed: allEmails.length,
+        emailsWithAttachments: emailsWithAttachments,
         lastSynced: new Date().toISOString(),
         debugInfo,
         // PHASE 3: Superior universal threading system metrics
@@ -851,7 +1041,19 @@ serve(async (req) => {
           universalThreadingSuccessRate: universalThreadingSuccessRate + '%',
           phase: 'Phase 3 - Universal RFC2822 Threading',
           performance: '~70% faster than Phase 2',
-          features: ['Internal Notes', 'Universal Threading', 'Platform Independence', 'RFC2822 Standards']
+          features: ['Internal Notes', 'Universal Threading', 'Platform Independence', 'RFC2822 Standards', 'Smart Reference Architecture']
+        },
+        // NEW: Attachment processing metrics with synthetic support
+        attachmentStats: {
+          emailsWithAttachments: emailsWithAttachments,
+          attachmentProcessingEnabled: true,
+          cidExtractionEnabled: true,
+          smartReferenceArchitecture: true,
+          // PHASE 3: Synthetic attachment capabilities
+          syntheticAttachmentProcessing: true,
+          orphanedCidDetection: true,
+          syntheticAttachmentResolution: true,
+          multiStrategyResolution: true
         }
       }),
       { 
@@ -859,41 +1061,14 @@ serve(async (req) => {
         headers: corsHeaders 
       }
     );
-
   } catch (error) {
-    // ==============================================================================================
-    // COMPREHENSIVE ERROR HANDLING AND LOGGING
-    // ==============================================================================================
-    
-    debugInfo.totalDuration = Date.now() - startTime;
-    console.error('Sync error:', error);
-    
-    /**
-     * COMPREHENSIVE ERROR LOGGING
-     * Log detailed error information for debugging
-     * This helps identify and fix issues quickly
-     */
-    console.log('=== ERROR DEBUG INFORMATION ===');
-    console.log('Error type:', error.constructor.name);
-    console.log('Error message:', error.message);
-    console.log('Error stack:', error.stack);
-    console.log('Debug info:', JSON.stringify(debugInfo, null, 2));
-    console.log('=== END ERROR DEBUG ===');
-    
-    /**
-     * Return error response with debug information
-     * This provides detailed information about what went wrong
-     */
+    console.error('Error processing email sync:', error);
     return new Response(
       JSON.stringify({ 
-        error: error.message,
-        timestamp: new Date().toISOString(),
+        error: 'An error occurred while processing the email sync',
         debugInfo
       }),
-      { 
-        status: 500, 
-        headers: corsHeaders 
-      }
+      { status: 500, headers: corsHeaders }
     );
   }
 });

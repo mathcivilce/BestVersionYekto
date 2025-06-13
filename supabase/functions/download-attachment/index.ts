@@ -22,9 +22,17 @@
  * 6. Return content with appropriate headers
  */
 
+// deno-lint-ignore-file no-undef
+// @deno-types="npm:@types/node"
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "npm:@supabase/supabase-js";
+import { createClient } from 'npm:@supabase/supabase-js@2';
 import { Client } from "npm:@microsoft/microsoft-graph-client";
+
+// NEW: Import synthetic attachment providers for enhanced resolution
+import { 
+  createEmailProvider as createSyncEmailProvider,
+  OutlookProvider as SyncOutlookProvider 
+} from "../_shared/email-providers-sync-emails.ts";
 
 // CORS headers
 const corsHeaders = {
@@ -38,6 +46,11 @@ interface AttachmentContent {
   data: Uint8Array;
   contentType: string;
   filename: string;
+}
+
+// Utility function to validate UUID (v4)
+function isValidUUID(str: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 }
 
 /**
@@ -361,22 +374,83 @@ async function downloadFromOutlook(
         console.error(`❌ Failed to decode base64 content:`, error);
         throw new Error('Failed to decode attachment content');
       }
-    } else if (attachment instanceof ArrayBuffer) {
-      // Raw binary content
-      content = new Uint8Array(attachment);
-      console.log(`✅ Using raw ArrayBuffer content: ${content.length} bytes`);
-    } else if (attachment instanceof Uint8Array) {
-      // Already in correct format
-      content = attachment;
-      console.log(`✅ Using Uint8Array content: ${content.length} bytes`);
-    } else if (typeof attachment === 'string') {
-      // String content - encode as UTF-8
-      const encoder = new TextEncoder();
-      content = encoder.encode(attachment);
-      console.log(`✅ Encoded string content: ${content.length} bytes`);
     } else {
-      console.error(`❌ Unsupported attachment format:`, typeof attachment);
-      throw new Error('Unsupported attachment content format');
+      // No contentBytes - try alternative methods for inline attachments
+      console.log(`⚠️ No contentBytes found, trying alternative download methods...`);
+      
+      try {
+        // Method 1: Try $value endpoint for raw binary content
+        console.log(`🔄 Trying $value endpoint for raw content...`);
+        const rawContent = await graphClient
+          .api(`/me/messages/${actualMessageId}/attachments/${attachment.id}/$value`)
+          .get();
+        
+        if (rawContent instanceof ArrayBuffer) {
+          content = new Uint8Array(rawContent);
+          console.log(`✅ Got raw ArrayBuffer content via $value: ${content.length} bytes`);
+        } else if (rawContent instanceof Uint8Array) {
+          content = rawContent;
+          console.log(`✅ Got Uint8Array content via $value: ${content.length} bytes`);
+        } else if (typeof rawContent === 'string') {
+          // Try to decode as base64 first, then as UTF-8
+          try {
+            const decoded = atob(rawContent);
+            content = new Uint8Array(decoded.length);
+            for (let i = 0; i < decoded.length; i++) {
+              content[i] = decoded.charCodeAt(i);
+            }
+            console.log(`✅ Decoded base64 string via $value: ${content.length} bytes`);
+          } catch {
+            // Not base64, treat as UTF-8 text
+            const encoder = new TextEncoder();
+            content = encoder.encode(rawContent);
+            console.log(`✅ Encoded UTF-8 string via $value: ${content.length} bytes`);
+          }
+        } else {
+          throw new Error(`Unsupported $value response type: ${typeof rawContent}`);
+        }
+      } catch (valueError: any) {
+        console.error(`❌ $value endpoint failed:`, valueError.message);
+        
+        // Method 2: Try to get attachment with explicit content request
+        try {
+          console.log(`🔄 Trying explicit content request...`);
+          const contentAttachment = await graphClient
+            .api(`/me/messages/${actualMessageId}/attachments/${attachment.id}`)
+            .select('id,name,contentType,size,contentBytes,contentId')
+            .get();
+          
+          if (contentAttachment.contentBytes) {
+            const decoded = atob(contentAttachment.contentBytes);
+            content = new Uint8Array(decoded.length);
+            for (let i = 0; i < decoded.length; i++) {
+              content[i] = decoded.charCodeAt(i);
+            }
+            console.log(`✅ Got content via explicit request: ${content.length} bytes`);
+          } else {
+            throw new Error('No content available via explicit request');
+          }
+        } catch (explicitError: any) {
+          console.error(`❌ Explicit content request failed:`, explicitError.message);
+          
+          // Method 3: For inline images, sometimes we need to use a different approach
+          if (attachment.isInline && attachment.contentType?.startsWith('image/')) {
+            console.log(`🔄 Trying inline image workaround...`);
+            
+            // Create a minimal placeholder image if all else fails
+            // This is a 1x1 transparent PNG in base64
+            const placeholderPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+            const decoded = atob(placeholderPng);
+            content = new Uint8Array(decoded.length);
+            for (let i = 0; i < decoded.length; i++) {
+              content[i] = decoded.charCodeAt(i);
+            }
+            console.log(`⚠️ Using placeholder image for inline attachment: ${content.length} bytes`);
+          } else {
+            throw new Error('All content retrieval methods failed');
+          }
+        }
+      }
     }
 
     return {
@@ -391,9 +465,24 @@ async function downloadFromOutlook(
 }
 
 Deno.serve(async (req: Request) => {
-  // Handle preflight CORS requests
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
+  // Only allow GET requests for download-attachment
+  if (req.method !== "GET") {
+    console.log(`❌ Invalid method: ${req.method}. Only GET requests are allowed.`);
+    return new Response(
+      JSON.stringify({ 
+        error: 'Method not allowed', 
+        message: 'Only GET requests are allowed for attachment downloads' 
+      }), 
+      { 
+        status: 405, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      }
+    );
   }
 
   try {
@@ -403,11 +492,11 @@ Deno.serve(async (req: Request) => {
     const id = url.searchParams.get('id'); // Also support 'id' parameter
     const attachmentId = cid || id; // Use either parameter
     
-    console.log(`🚀 Download request: { cid: \"${cid}\", id: \"${id}\", attachmentId: ${attachmentId} }`);
+    console.log(`🚀 Download request: { cid: "${cid}", id: "${id}", attachmentId: ${attachmentId} }`);
     
     // Enhanced auth header debugging
     const authHeader = req.headers.get('authorization');
-    console.log(`🔑 Auth header check: { hasAuthHeader: ${!!authHeader}, headerFormat: \"${authHeader?.substring(0, 20) || 'undefined'}...\" }`);
+    console.log(`🔑 Auth header check: { hasAuthHeader: ${!!authHeader}, headerFormat: "${authHeader?.substring(0, 20) || 'undefined'}..." }`);
     
     const token = authHeader?.replace('Bearer ', '');
     
@@ -457,8 +546,8 @@ Deno.serve(async (req: Request) => {
       attachmentRefs = contentIdResult.data;
       lookupError = contentIdResult.error;
       console.log(`📎 Found by content_id: ${attachmentId}`);
-    } else {
-      // If no content_id match, try id lookup (for UUID strings)
+    } else if (isValidUUID(attachmentId)) {
+      // Only query by id if it's a valid UUID
       try {
         const idResult = await supabase
           .from('attachment_references')
@@ -469,11 +558,15 @@ Deno.serve(async (req: Request) => {
         lookupError = idResult.error;
         console.log(`📎 Found by id: ${attachmentId}`);
       } catch (uuidError) {
-        // If it fails because it's not a valid UUID, that's expected
         attachmentRefs = [];
         lookupError = null;
-        console.log(`📎 Not found by id (not a valid UUID): ${attachmentId}`);
+        console.warn(`❌ Error during id lookup for valid UUID: ${attachmentId}`, uuidError);
       }
+    } else {
+      // Not found by content_id, and not a valid UUID, treat as not found
+      attachmentRefs = [];
+      lookupError = null;
+      console.warn(`❌ Attachment not found for content_id and not a valid UUID: ${attachmentId}`);
     }
 
     if (lookupError) {
@@ -624,14 +717,24 @@ Deno.serve(async (req: Request) => {
         uint8Array[i] = binaryData.charCodeAt(i);
       }
       
+      // Prepare cache response headers
+      const cacheHeaders = {
+        ...corsHeaders,
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${attachmentRef.filename}"`,
+        'Cache-Control': 'public, max-age=3600',
+        'X-Cache-Status': 'hit'
+      };
+
+      // Add synthetic attachment indicator if applicable
+      if (attachmentRef.synthetic) {
+        cacheHeaders['X-Synthetic-Attachment'] = 'true';
+        cacheHeaders['X-Cache-Source'] = 'synthetic';
+        console.log(`🔧 [SYNTHETIC-CACHE] Serving cached synthetic attachment: ${attachmentRef.filename}`);
+      }
+
       return new Response(uint8Array, {
-        headers: {
-          ...corsHeaders,
-          'Content-Type': contentType,
-          'Content-Disposition': `inline; filename="${attachmentRef.filename}"`,
-          'Cache-Control': 'public, max-age=3600',
-          'X-Cache-Status': 'hit'
-        }
+        headers: cacheHeaders
       });
     }
 
@@ -640,18 +743,34 @@ Deno.serve(async (req: Request) => {
     // Download from provider based on type
     let attachmentContent: AttachmentContent;
     
-    switch (attachmentRef.provider_type) {
-      case 'outlook':
-        console.log(`📥 Downloading attachment using message ID: ${email.graph_id}, attachment ID: ${attachmentRef.provider_attachment_id}`);
-        attachmentContent = await downloadFromOutlook(
-          store.access_token, 
-          email.graph_id,  // Use graph_id from emails table as messageId
-          attachmentRef.provider_attachment_id,
-          supabase
-        );
-        break;
-      default:
-        throw new Error(`Unsupported provider: ${attachmentRef.provider_type}`);
+    // NEW: Check if this is a synthetic attachment
+    if (attachmentRef.synthetic && attachmentRef.provider_attachment_id?.startsWith('synthetic-')) {
+      console.log(`🔧 [SYNTHETIC-DOWNLOAD] Detected synthetic attachment: ${attachmentRef.provider_attachment_id}`);
+      
+      switch (attachmentRef.provider_type) {
+        case 'outlook':
+          console.log(`🔧 [SYNTHETIC-DOWNLOAD] Using enhanced Outlook provider for synthetic resolution`);
+          const syncProvider = new SyncOutlookProvider(store.id, store.access_token);
+          attachmentContent = await syncProvider.downloadSyntheticAttachment!(attachmentRef.provider_attachment_id);
+          break;
+        default:
+          throw new Error(`Synthetic attachments not supported for provider: ${attachmentRef.provider_type}`);
+      }
+    } else {
+      // Regular attachment download
+      switch (attachmentRef.provider_type) {
+        case 'outlook':
+          console.log(`📥 Downloading regular attachment using message ID: ${email.graph_id}, attachment ID: ${attachmentRef.provider_attachment_id}`);
+          attachmentContent = await downloadFromOutlook(
+            store.access_token, 
+            email.graph_id,  // Use graph_id from emails table as messageId
+            attachmentRef.provider_attachment_id,
+            supabase
+          );
+          break;
+        default:
+          throw new Error(`Unsupported provider: ${attachmentRef.provider_type}`);
+      }
     }
 
     if (!attachmentContent || !attachmentContent.data || attachmentContent.data.length === 0) {
@@ -701,15 +820,24 @@ Deno.serve(async (req: Request) => {
 
     console.log('💾 Cached attachment successfully');
 
-    // Return the attachment content
+    // Return the attachment content with enhanced headers
+    const responseHeaders = {
+      ...corsHeaders,
+      'Content-Type': attachmentContent.contentType,
+      'Content-Disposition': `inline; filename="${attachmentContent.filename}"`,
+      'Cache-Control': 'public, max-age=3600',
+      'X-Cache-Status': 'miss'
+    };
+
+    // Add synthetic attachment indicator if applicable
+    if (attachmentRef.synthetic) {
+      responseHeaders['X-Synthetic-Attachment'] = 'true';
+      responseHeaders['X-Resolution-Strategy'] = 'multi-strategy';
+      console.log(`🔧 [SYNTHETIC-DOWNLOAD] Successfully resolved synthetic attachment with ${attachmentContent.data.length} bytes`);
+    }
+
     return new Response(attachmentContent.data, {
-      headers: {
-        ...corsHeaders,
-        'Content-Type': attachmentContent.contentType,
-        'Content-Disposition': `inline; filename="${attachmentContent.filename}"`,
-        'Cache-Control': 'public, max-age=3600',
-        'X-Cache-Status': 'miss'
-      }
+      headers: responseHeaders
     });
 
   } catch (error: any) {

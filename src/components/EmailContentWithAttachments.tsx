@@ -230,7 +230,6 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
                   maxWidth={maxImageWidth}
                   maxHeight={maxImageHeight}
                   className="inline-block"
-                  showDownloadButton={true}
                 />
               </div>
             );

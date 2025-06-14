@@ -1,22 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { X, Inbox, Settings, LayoutDashboard, Mail, ShoppingBag, ChevronDown, ChevronRight, FileText, Users, Ticket } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useInbox } from '../../contexts/InboxContext';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
 interface SidebarProps {
   isOpen: boolean;
   setIsOpen: (isOpen: boolean) => void;
 }
 
+interface TicketCounts {
+  [storeId: string]: number;
+}
+
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
   const location = useLocation();
   const { user, logout } = useAuth();
   const { stores } = useInbox();
-  const [inboxOpen, setInboxOpen] = useState(true);
-  const [openTicketsOpen, setOpenTicketsOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [openTicketsOpen, setOpenTicketsOpen] = useState(true);
   const [workflowsOpen, setWorkflowsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [ticketCounts, setTicketCounts] = useState<TicketCounts>({});
   
   const isActive = (path: string) => {
     return location.pathname === path;
@@ -67,6 +78,64 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
       ]
     },
   ];
+
+  // Fetch ticket counts for all stores
+  const fetchTicketCounts = async () => {
+    if (!user) return;
+
+    try {
+      const emailStores = stores.filter(store => store.connected && store.platform === 'outlook');
+      const counts: TicketCounts = {};
+
+      // Fetch counts for each store
+      for (const store of emailStores) {
+        const { count } = await supabase
+          .from('emails')
+          .select('*', { count: 'exact', head: true })
+          .eq('store_id', store.id)
+          .eq('user_id', user.id)
+          .eq('status', 'open');
+
+        counts[store.id] = count || 0;
+      }
+
+      setTicketCounts(counts);
+    } catch (error) {
+      console.error('Error fetching ticket counts:', error);
+      // Don't show error to user, just fail silently as requested
+    }
+  };
+
+  // Initial load of ticket counts
+  useEffect(() => {
+    fetchTicketCounts();
+  }, [user, stores]);
+
+  // Real-time subscription for ticket count updates
+  useEffect(() => {
+    if (!user) return;
+
+    const subscription = supabase
+      .channel('ticket-counts')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'emails',
+          filter: `user_id=eq.${user.id}`
+        },
+        (payload) => {
+          // Refresh counts when emails are added, updated, or deleted
+          fetchTicketCounts();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [user, stores]);
 
   return (
     <>
@@ -156,21 +225,32 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
                             </Link>
                           </li>
                         )}
-                        {item.submenu.map((subItem) => (
-                          <li key={subItem.path}>
-                            <Link
-                              to={subItem.path}
-                              onClick={closeSidebar}
-                              className={`block px-2 py-2 text-sm font-medium rounded-lg transition-colors text-left ${
-                                location.pathname.includes(subItem.path)
-                                  ? 'bg-white/10 text-sidebar-text-active'
-                                  : 'text-sidebar-text hover:bg-white/5 hover:text-sidebar-text-active'
-                              }`}
-                            >
-                              {subItem.label}
-                            </Link>
-                          </li>
-                        ))}
+                        {item.submenu.map((subItem) => {
+                          // Extract store ID from path for Open Tickets
+                          const storeId = item.path === '/open-tickets' ? subItem.path.split('/').pop() : null;
+                          const ticketCount = storeId ? ticketCounts[storeId] : null;
+                          
+                          return (
+                            <li key={subItem.path}>
+                              <Link
+                                to={subItem.path}
+                                onClick={closeSidebar}
+                                className={`flex items-center justify-between px-2 py-2 text-sm font-medium rounded-lg transition-colors ${
+                                  location.pathname.includes(subItem.path)
+                                    ? 'bg-white/10 text-sidebar-text-active'
+                                    : 'text-sidebar-text hover:bg-white/5 hover:text-sidebar-text-active'
+                                }`}
+                              >
+                                <span className="text-left">{subItem.label}</span>
+                                {item.path === '/open-tickets' && ticketCount !== null && (
+                                  <span className="text-xs font-medium text-sidebar-text opacity-70">
+                                    {ticketCount}
+                                  </span>
+                                )}
+                              </Link>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>

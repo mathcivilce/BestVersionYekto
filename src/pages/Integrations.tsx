@@ -121,7 +121,7 @@ const Integrations: React.FC = () => {
       id: 'shopify',
       name: 'Shopify',
       description: 'Connect your Shopify store to sync customer data and orders.',
-      icon: ShoppingBag,
+      icon: '/icons/shopify-icon.png',
       status: 'available',
       color: 'green'
     }
@@ -136,16 +136,17 @@ const Integrations: React.FC = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {integrations.map((integration) => {
-            const Icon = integration.icon;
             return (
               <div
                 key={integration.id}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"
               >
                 <div className="flex items-start">
-                  <div className={`p-3 rounded-lg bg-${integration.color}-50 text-${integration.color}-600`}>
-                    <Icon size={24} />
-                  </div>
+                  <img 
+                    src={integration.icon} 
+                    alt={`${integration.name} icon`}
+                    className="w-12 h-12 rounded-lg"
+                  />
                   <div className="ml-4 flex-1">
                     <h3 className="text-lg font-medium text-gray-900">
                       {integration.name}

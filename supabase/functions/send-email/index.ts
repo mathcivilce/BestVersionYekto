@@ -49,6 +49,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'npm:@supabase/supabase-js';
 import { Client } from 'npm:@microsoft/microsoft-graph-client';
+// Back to Microsoft Graph API with clean implementation
 
 // CORS headers for cross-origin requests from frontend
 const corsHeaders = {
@@ -137,7 +138,12 @@ serve(async (req) => {
       .from('emails')
       .select(`
         *,
-        store:stores (*)
+        store:stores (
+          *,
+          business:businesses (
+            name
+          )
+        )
       `)
       .eq('id', emailId)
       .single();
@@ -297,7 +303,30 @@ serve(async (req) => {
 
     // Process all attachments for Microsoft Graph API
     const graphAttachments = await processAttachments(attachments);
-    const processedContent = processHtmlContent(content, attachments);
+    let processedContent = processHtmlContent(content, attachments);
+    
+    /**
+     * 🌍 UNIVERSAL RFC2822 THREADING: Embed standards-compliant headers in email content
+     * This ensures threading works across ALL email clients (Gmail, Yahoo, Apple Mail, Thunderbird, etc.)
+     * while maintaining Microsoft Graph API compatibility
+     */
+    const embedRFC2822Headers = (htmlContent: string, headers: any): string => {
+      const rfc2822Block = `
+<!--[RFC2822-THREADING-HEADERS-START]-->
+<div style="display:none !important;visibility:hidden !important;font-size:0 !important;line-height:0 !important;max-height:0 !important;overflow:hidden !important;opacity:0 !important;mso-hide:all;">
+Message-ID: ${headers.messageId}
+In-Reply-To: ${headers.inReplyTo}
+References: ${headers.references}
+Thread-Topic: ${headers.threadTopic}
+Thread-Index: ${headers.threadIndex}
+Date: ${new Date().toUTCString()}
+</div>
+<!--[RFC2822-THREADING-HEADERS-END]-->
+`;
+      
+      // Insert RFC2822 headers at the beginning of the email content
+      return rfc2822Block + htmlContent;
+    };
 
     // Separate inline and regular attachments for logging
     const inlineAttachments = graphAttachments.filter(att => att.isInline);
@@ -360,26 +389,124 @@ serve(async (req) => {
      * 
      * @param maxRetries - Maximum number of retry attempts
      */
+    // Declare variables at function scope for database operations
+    let sentEmailSubject = '';
+    let sentEmailContent = '';
+    
     const sendEmailWithRetry = async (maxRetries = 1) => {
+      let mailOptions: any = null; // Declare outside try block for access in database operations
+      
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           const graphClient = createGraphClient(accessToken);
 
           console.log(`Sending email with ${graphAttachments.length} attachments (attempt ${attempt + 1})...`);
 
-          // Construct comprehensive email payload for Microsoft Graph API
+          // 🎯 UNIVERSAL THREADING: Generate proper RFC2822 headers for cross-provider compatibility
+          // 🌍 UNIVERSAL RFC2822 THREADING: Generate standards-compliant headers for cross-platform compatibility
+          const domain = email.store.email.split('@')[1] || 'outlook.com';
+          const replyMessageId = `<reply-${Date.now()}-${crypto.randomUUID()}@${domain}>`;
+          let originalMessageId = email.message_id_header || email.internet_message_id || `<original-${email.id}@${domain}>`;
+          
+          // Ensure originalMessageId has proper angle brackets for RFC2822 compliance
+          if (originalMessageId && !originalMessageId.startsWith('<')) {
+            originalMessageId = `<${originalMessageId}>`;
+          }
+          
+          // Build RFC2822 compliant References header for conversation history
+          const buildReferencesHeader = (originalEmail: any): string => {
+            const existingReferences = originalEmail.references_header || '';
+            let originalMsgId = originalEmail.message_id_header || originalEmail.internet_message_id;
+            
+            // Ensure Message-ID has proper angle brackets
+            if (originalMsgId && !originalMsgId.startsWith('<')) {
+              originalMsgId = `<${originalMsgId}>`;
+            }
+            
+            if (existingReferences && originalMsgId) {
+              // Ensure proper spacing between message IDs and angle brackets
+              return `${existingReferences.trim()} ${originalMsgId}`;
+            } else if (originalMsgId) {
+              return originalMsgId;
+            }
+            return '';
+          };
+          
+          const referencesHeader = buildReferencesHeader(email);
+          
+          // Generate Thread-Index for Outlook compatibility (optional enhancement)
+          const generateThreadIndex = (): string => {
+            const timestamp = Date.now();
+            const random = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+            // Use Deno's built-in encoding instead of Buffer
+            const encoder = new TextEncoder();
+            const data = encoder.encode(`${timestamp}${random}`);
+            return btoa(String.fromCharCode(...data)).substring(0, 22);
+          };
+          
+          const threadIndex = generateThreadIndex();
+
+          // 🏆 PURE RFC2822 APPROACH: No content embedding needed - headers go in SMTP transport layer
+          
+          // 🌍 PREPARE CLEAN EMAIL CONTENT (no embedded headers)
+          const cleanContent = processedContent.replace(/<!--\[RFC2822-THREADING-HEADERS-START\]-->.*?<!--\[RFC2822-THREADING-HEADERS-END\]-->/s, '');
+          
+          // 🏆 CONSTRUCT EMAIL WITH RFC2822 HEADERS IN INTERNET MESSAGE HEADERS
+          const emailSubject = email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`;
+          
+          mailOptions = {
+            from: email.store.email,
+            to: email.from,
+            subject: emailSubject,
+            html: cleanContent, // Clean content without any embedded headers
+          };
+          
+          // Set variables for database operations
+          sentEmailSubject = emailSubject;
+          sentEmailContent = cleanContent;
+
           const emailPayload = {
             message: {
-              subject: `Re: ${email.subject}`,
+              subject: mailOptions.subject,
               body: {
                 contentType: 'HTML',
-                content: processedContent
+                content: cleanContent // Clean HTML content
+              },
+              from: {
+                emailAddress: {
+                  address: email.store.email,
+                  name: email.store.name || 'Support' // Use store name as sender display name
+                }
               },
               toRecipients: [{
                 emailAddress: {
                   address: email.from
                 }
               }],
+              // 🌍 STANDARD RFC2822 THREADING HEADERS (Required for proper threading in Outlook)
+              internetMessageHeaders: [
+                // Standard RFC2822 threading headers - CRITICAL for Outlook threading
+                {
+                  name: 'Message-ID',
+                  value: replyMessageId
+                },
+                {
+                  name: 'In-Reply-To', 
+                  value: originalMessageId
+                },
+                {
+                  name: 'References',
+                  value: referencesHeader
+                },
+                {
+                  name: 'Thread-Index',
+                  value: threadIndex
+                },
+                {
+                  name: 'Thread-Topic',
+                  value: email.subject.replace(/^(Re|RE|re):\s*/, '')
+                }
+              ],
               // Add attachments if any exist
               ...(graphAttachments.length > 0 && {
                 attachments: graphAttachments
@@ -388,34 +515,116 @@ serve(async (req) => {
             saveToSentItems: true
           };
 
-          // 🐛 DEBUG: Log the complete email payload structure
-          console.log('=== MICROSOFT GRAPH EMAIL PAYLOAD ===');
-          console.log('Subject:', emailPayload.message.subject);
-          console.log('To:', emailPayload.message.toRecipients[0].emailAddress.address);
-          console.log('Content Type:', emailPayload.message.body.contentType);
-          console.log('Content Length:', emailPayload.message.body.content.length);
-          console.log('Has Attachments:', !!emailPayload.message.attachments);
-          console.log('Attachments Count:', emailPayload.message.attachments?.length || 0);
+          console.log('=== CLEAN RFC2822 GRAPH API EMAIL ===');
+          console.log('From:', email.store.email);
+          console.log('To:', email.from);
+          console.log('Subject:', mailOptions.subject);
+          console.log('RFC2822 Headers (X- prefixed):');
+          emailPayload.message.internetMessageHeaders.forEach(header => {
+            console.log(`  ${header.name}: ${header.value}`);
+          });
+          console.log('Content Length:', cleanContent.length);
+          console.log('Attachments Count:', graphAttachments.length);
+
+          // 🏆 SEND EMAIL VIA GRAPH API WITH PROPER THREADING
+          // Use Microsoft's native reply endpoint for perfect threading
+          let sendResponse;
           
-          if (emailPayload.message.attachments && emailPayload.message.attachments.length > 0) {
-            console.log('Attachment Details:');
-            emailPayload.message.attachments.forEach((att, index) => {
-              console.log(`  ${index + 1}. ${att.name}`);
-              console.log(`     - Type: ${att.contentType}`);
-              console.log(`     - Size: ${att.contentBytes?.length || 0} base64 chars`);
-              console.log(`     - Inline: ${att.isInline || false}`);
-              console.log(`     - ContentId: ${att.contentId || 'none'}`);
-            });
+          if (email.graph_id) {
+            console.log('🔗 Using Graph API native reply endpoint for perfect threading...');
+            try {
+              // Microsoft's native reply endpoint automatically handles all RFC2822 threading
+              sendResponse = await graphClient
+                .api(`/me/messages/${email.graph_id}/reply`)
+                .post({
+                  message: {
+                    body: {
+                      contentType: 'HTML',
+                      content: cleanContent
+                    },
+                                          from: {
+                        emailAddress: {
+                          address: email.store.email,
+                          name: email.store.name || 'Support' // Use store name, not business name
+                        }
+                      },
+                    // Add attachments if any exist
+                    ...(graphAttachments.length > 0 && {
+                      attachments: graphAttachments
+                    })
+                  },
+                  comment: '' // Empty comment since we include full content in body
+                });
+              console.log('✅ Email sent via native reply endpoint - threading handled automatically');
+            } catch (replyError) {
+              console.log('❌ Reply endpoint failed, using sendMail fallback:', replyError.message);
+              // Fallback to sendMail with enhanced threading headers
+              sendResponse = await graphClient
+                .api('/me/sendMail')
+                .post(emailPayload);
+              console.log('✅ Email sent via sendMail fallback with manual threading headers');
+            }
+          } else {
+            console.log('📧 No graph_id available, using sendMail with manual threading headers...');
+            // Use sendMail for new conversations or when graph_id is not available
+            sendResponse = await graphClient
+              .api('/me/sendMail')
+              .post(emailPayload);
+            console.log('✅ Email sent via sendMail with manual threading headers');
           }
-          console.log('=======================================');
 
-          // Send email via Microsoft Graph API
-          await graphClient
-            .api('/me/sendMail')
-            .post(emailPayload);
-
-          console.log(`✅ Email sent successfully with ${graphAttachments.length} attachments`);
+          console.log(`✅ Email sent successfully via Graph API with clean RFC2822 headers`);
+          console.log('Message ID:', replyMessageId);
           console.log('=== SEND EMAIL DEBUG END ===');
+
+          // 🎯 CRITICAL: Store the sent email in the emails table with proper threading
+          // 🔥 DUPLICATE PREVENTION: Use upsert to prevent duplicates when Microsoft syncs back
+          console.log('Storing sent email with proper threading and duplicate prevention...');
+          
+          const { data: sentEmailRecord, error: sentEmailError } = await supabase
+            .from('emails')
+            .upsert({
+              id: crypto.randomUUID(),
+              graph_id: null, // Will be updated when synced back from Microsoft
+              thread_id: email.thread_id, // ✅ INHERIT THREAD ID from original email
+              subject: sentEmailSubject || (email.subject.startsWith('Re:') ? email.subject : `Re: ${email.subject}`),
+              from: email.store.name || email.store.email, // Store name for display, fallback to email
+              to: email.from,  // Reply to original sender
+              content: sentEmailContent || processedContent, // Clean HTML content without embedded headers
+              date: new Date().toISOString(),
+              read: true, // We sent it
+              priority: 1,
+              status: email.status, // Inherit status from original
+              store_id: email.store.id,
+              user_id: user.id,
+              business_id: email.business_id,
+              // 🌍 RFC2822 THREADING METADATA for universal compatibility:
+              message_id_header: replyMessageId, // Generated for our records
+              internet_message_id: replyMessageId, // RFC2822 standard
+              in_reply_to_header: originalMessageId,
+              references_header: referencesHeader,
+              thread_index_header: threadIndex, // Outlook compatibility
+              conversation_root_id: email.thread_id,
+              direction: 'outbound',
+              recipient: email.from,
+              is_outbound: true,
+              processed_by_custom_threading: true,
+              // 🌍 UNIVERSAL THREADING: No Microsoft-specific fields
+              created_at: new Date().toISOString()
+            }, {
+              onConflict: 'message_id_header,user_id,store_id', // Prevent duplicates by Message-ID + User + Store
+              ignoreDuplicates: false // Update if exists (when Microsoft syncs back with graph_id)
+            })
+            .select('*')
+            .single();
+
+          if (sentEmailError) {
+            console.error('Failed to store sent email with threading:', sentEmailError);
+            // Don't fail the send, but log for monitoring
+          } else {
+            console.log('✅ Sent email stored with proper threading and duplicate prevention:', sentEmailRecord.id);
+          }
+
           return; // Exit on successful send
 
         } catch (error: any) {
@@ -457,7 +666,7 @@ serve(async (req) => {
         email_id: emailId,
         user_id: user.id,
         store_id: email.store.id,
-        content: processedContent, // Use the processed HTML content with inline images
+        content: sentEmailContent || processedContent, // Use clean HTML content without embedded headers
         sent_at: new Date().toISOString(),
         // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
         direction: 'outbound',

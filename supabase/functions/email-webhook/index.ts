@@ -20,6 +20,7 @@
  * - Token expiration handling with automatic store status updates
  * - Duplicate prevention using composite unique constraints
  * - Multi-tenant support with business/user isolation
+ * - Consistent threading with sync-emails function
  * 
  * Security Measures:
  * - Client state verification to prevent unauthorized notifications
@@ -65,6 +66,59 @@ function extractReferences(referencesHeader: string | null): string | null {
   // References header contains space-separated Message-IDs in angle brackets
   // Example: "<id1@domain.com> <id2@domain.com> <id3@domain.com>"
   return referencesHeader.trim();
+}
+
+/**
+ * 🌍 UNIVERSAL RFC2822 HEADER EXTRACTION
+ * Extract embedded RFC2822 headers from email content for universal threading
+ * This enables cross-platform threading compatibility with Gmail, Yahoo, Apple Mail, etc.
+ * 
+ * @param htmlContent - Email HTML content that may contain embedded headers
+ * @returns Object containing extracted RFC2822 headers
+ */
+function extractEmbeddedRFC2822Headers(htmlContent: string): {
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  threadTopic?: string;
+  threadIndex?: string;
+} {
+  if (!htmlContent) return {};
+  
+  try {
+    // Look for our embedded RFC2822 headers block
+    const headerBlockMatch = htmlContent.match(
+      /<!--\[RFC2822-THREADING-HEADERS-START\]-->(.*?)<!--\[RFC2822-THREADING-HEADERS-END\]-->/s
+    );
+    
+    if (!headerBlockMatch) return {};
+    
+    const headerBlock = headerBlockMatch[1];
+    const headers: any = {};
+    
+    // Extract individual headers using regex
+    const messageIdMatch = headerBlock.match(/Message-ID:\s*([^\n\r]+)/);
+    if (messageIdMatch) headers.messageId = messageIdMatch[1].trim();
+    
+    const inReplyToMatch = headerBlock.match(/In-Reply-To:\s*([^\n\r]+)/);
+    if (inReplyToMatch) headers.inReplyTo = inReplyToMatch[1].trim();
+    
+    const referencesMatch = headerBlock.match(/References:\s*([^\n\r]+)/);
+    if (referencesMatch) headers.references = referencesMatch[1].trim();
+    
+    const threadTopicMatch = headerBlock.match(/Thread-Topic:\s*([^\n\r]+)/);
+    if (threadTopicMatch) headers.threadTopic = threadTopicMatch[1].trim();
+    
+    const threadIndexMatch = headerBlock.match(/Thread-Index:\s*([^\n\r]+)/);
+    if (threadIndexMatch) headers.threadIndex = threadIndexMatch[1].trim();
+    
+    console.log('🌍 Extracted embedded RFC2822 headers:', Object.keys(headers));
+    return headers;
+    
+  } catch (error) {
+    console.error('Error extracting embedded RFC2822 headers:', error);
+    return {};
+  }
 }
 
 serve(async (req) => {
@@ -202,22 +256,43 @@ serve(async (req) => {
           .select('id,subject,bodyPreview,from,toRecipients,receivedDateTime,isRead,body,conversationId,internetMessageId,internetMessageHeaders')
           .get();
 
-        // Extract RFC2822 headers for universal email threading
-        const messageIdHeader = extractHeader(message.internetMessageHeaders, 'Message-ID') || message.internetMessageId;
-        const inReplyToHeader = extractHeader(message.internetMessageHeaders, 'In-Reply-To');
-        const referencesHeader = extractReferences(extractHeader(message.internetMessageHeaders, 'References'));
+        // 🌍 UNIVERSAL RFC2822 THREADING: Extract headers from multiple sources
+        // Priority: 1) Embedded RFC2822 headers (from our sent emails)
+        //          2) X-prefixed headers (from our Graph API emails)  
+        //          3) Standard email headers (from external emails)
+        // This ensures cross-platform compatibility with Gmail, Yahoo, Apple Mail, etc.
+        const embeddedHeaders = extractEmbeddedRFC2822Headers(message.body?.content || '');
+        
+        // Multi-source RFC2822 header extraction with priority
+        const messageIdHeader = embeddedHeaders.messageId || 
+                               extractHeader(message.internetMessageHeaders, 'X-Message-ID-RFC2822') ||
+                               extractHeader(message.internetMessageHeaders, 'Message-ID') || 
+                               message.internetMessageId;
+        
+        const inReplyToHeader = embeddedHeaders.inReplyTo || 
+                               extractHeader(message.internetMessageHeaders, 'X-In-Reply-To-RFC2822') ||
+                               extractHeader(message.internetMessageHeaders, 'In-Reply-To');
+        
+        const referencesHeader = embeddedHeaders.references || 
+                                extractHeader(message.internetMessageHeaders, 'X-References-RFC2822') ||
+                                extractReferences(extractHeader(message.internetMessageHeaders, 'References'));
+        
+        const threadIndexHeader = embeddedHeaders.threadIndex || 
+                                 extractHeader(message.internetMessageHeaders, 'X-Thread-Index') ||
+                                 extractHeader(message.internetMessageHeaders, 'Thread-Index');
         
         // Extract recipient emails for threading context
         const toEmails = message.toRecipients?.map((r: any) => r.emailAddress?.address).filter(Boolean).join(',') || '';
 
-        console.log('Threading headers extracted:', {
+        console.log('🌍 Universal threading headers extracted:', {
           messageId: messageIdHeader,
           inReplyTo: inReplyToHeader,
-          references: referencesHeader
+          references: referencesHeader,
+          threadIndex: threadIndexHeader
         });
 
-        // 🎯 UNIVERSAL THREADING: Use new universal threading function
-        // This uses RFC2822 standards that work across all email platforms
+        // 🏢 ENTERPRISE RFC 2822 THREADING: Use enterprise-grade threading function
+        // Supports RFC 2822, Microsoft Exchange, and all email providers
         const { data: threadResult, error: threadError } = await supabase
           .rpc('get_or_create_thread_id_universal', {
             p_message_id_header: messageIdHeader,
@@ -228,7 +303,9 @@ serve(async (req) => {
             p_to_email: toEmails,
             p_date: message.receivedDateTime || new Date().toISOString(),
             p_user_id: store.user_id,
-            p_store_id: store.id
+            p_store_id: store.id,
+            p_microsoft_conversation_id: message.conversationId,
+            p_thread_index_header: threadIndexHeader
           });
 
         if (threadError) {
@@ -273,28 +350,64 @@ serve(async (req) => {
           // Don't fail email processing if attachment extraction fails
         }
 
-        // Check if email already exists before processing
+        // 🔥 DUPLICATE PREVENTION: Check if email already exists before processing
+        // This prevents duplicate emails when Microsoft syncs back our sent emails
         const { data: existingEmail } = await supabase
           .from('emails')
-          .select('id')
-          .eq('graph_id', message.id)
+          .select('id, from, graph_id')
+          .or(`graph_id.eq.${message.id},message_id_header.eq.${messageIdHeader}`)
           .eq('user_id', store.user_id)
           .single();
 
         let actualEmailId: string;
 
         if (existingEmail) {
-          // Email already exists, skip processing to avoid foreign key issues
+          // Email already exists - check if it needs updating with Graph ID
           actualEmailId = existingEmail.id;
-          console.log('Email already exists, skipping processing:', message.id, 'Existing ID:', actualEmailId);
+          console.log('📧 Email already exists:', message.id, 'Existing ID:', actualEmailId);
+          
+          // If existing email doesn't have graph_id but this one does, update it
+          if (!existingEmail.graph_id && message.id) {
+            console.log('🔄 Updating existing email with Graph ID...');
+            await supabase
+              .from('emails')
+              .update({ 
+                graph_id: message.id,
+                microsoft_conversation_id: message.conversationId,
+                // Update sender info to match Microsoft's format for consistency
+                from: message.from?.emailAddress?.address || existingEmail.from
+              })
+              .eq('id', existingEmail.id);
+            
+            console.log('✅ Updated existing email with Graph metadata');
+          }
           
           // Skip attachment processing since it's already done
           continue;
         } else {
-          // Save new email to database with universal threading
+          // 🎯 THREAD ASSIGNMENT INHERITANCE: Check if thread already has an assignment
+          let inheritedAssignment = null;
+          if (universalThreadId) {
+            const { data: existingThreadEmail } = await supabase
+              .from('emails')
+              .select('assigned_to')
+              .eq('thread_id', universalThreadId)
+              .eq('user_id', store.user_id)
+              .not('assigned_to', 'is', null)
+              .order('date', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (existingThreadEmail?.assigned_to) {
+              inheritedAssignment = existingThreadEmail.assigned_to;
+              console.log('🔗 Inheriting thread assignment:', inheritedAssignment);
+            }
+          }
+
+          // Save new email to database with universal threading and duplicate prevention
           const { data: savedEmail, error: saveError } = await supabase
             .from('emails')
-            .insert({
+            .upsert({
               id: emailId,                                              // Use generated ID for new emails
               graph_id: message.id,                                     // Microsoft Graph message ID
               thread_id: universalThreadId,                            // Universal thread ID using RFC2822 standards
@@ -306,20 +419,27 @@ serve(async (req) => {
               read: message.isRead || false,                           // Read status
               priority: 1,                                             // Default priority level
               status: 'open',                                          // Default email status
+              assigned_to: inheritedAssignment,                       // 🎯 INHERIT THREAD ASSIGNMENT
               store_id: store.id,                                      // Associated email store
               user_id: store.user_id,                                  // User who owns this email
               business_id: store.business_id,                          // Business context for multi-tenancy
               internet_message_id: message.internetMessageId,         // Standard email message ID
               microsoft_conversation_id: message.conversationId,      // Store original conversationId for reference
+              // 🌍 Universal RFC2822 threading headers for cross-platform compatibility
               message_id_header: messageIdHeader,                     // RFC2822 Message-ID header
               in_reply_to_header: inReplyToHeader,                    // RFC2822 In-Reply-To header
               references_header: referencesHeader,                    // RFC2822 References header
+              thread_index_header: threadIndexHeader,                 // Outlook Thread-Index header for compatibility
               conversation_root_id: universalThreadId,                // Root message ID for this conversation
               has_attachments: attachmentCount > 0,                   // Smart Reference Architecture: metadata flag
               attachment_reference_count: attachmentCount,            // Smart Reference Architecture: count for UI
-              // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
-              direction: 'inbound',                                   // Incoming emails are always inbound
+              processed_by_custom_threading: true,                    // Mark as processed by universal threading
+              // 🎯 SMART DIRECTION DETECTION: Determine if email is inbound or outbound
+              direction: (message.from?.emailAddress?.address || '').toLowerCase() === store.email.toLowerCase() ? 'outbound' : 'inbound',
               recipient: toEmails                                      // Store the actual recipients (our store email)
+            }, {
+              onConflict: 'graph_id,user_id',                         // Prevent duplicates by Graph ID + User
+              ignoreDuplicates: false                                  // Update if exists
             })
             .select('id')
             .single();
@@ -330,7 +450,7 @@ serve(async (req) => {
           }
 
           actualEmailId = savedEmail?.id || emailId;
-          console.log('Email saved successfully with universal threading:', message.id, 'New ID:', actualEmailId);
+          console.log('✅ Email saved successfully with universal threading:', message.id, 'New ID:', actualEmailId);
         }
 
         // 🎯 NOW process attachment metadata AFTER email is saved

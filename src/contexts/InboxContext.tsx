@@ -849,6 +849,26 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           
           // Update OAuth attempt status
           oauthStateManager.updateOAuthAttempt(attemptId, 'completed', newStore.email);
+          
+          // 🔧 FIX ISSUE 1: Rebuild threads after reconnection
+          // After reconnection, all emails are "new" to the database and need to be
+          // processed chronologically to ensure proper threading
+          console.log('🧵 Rebuilding threads for reconnected store...');
+          try {
+            const { data: rebuildResult, error: rebuildError } = await supabase.rpc('rebuild_threads_for_store', {
+              p_store_id: newStore.id,
+              p_user_id: user?.id
+            });
+            
+            if (rebuildError) {
+              console.warn('Thread rebuild failed (non-critical):', rebuildError);
+            } else {
+              console.log('✅ Thread rebuild completed:', rebuildResult);
+            }
+          } catch (rebuildError) {
+            console.warn('Thread rebuild error (non-critical):', rebuildError);
+            // Don't fail the connection for threading issues
+          }
         } catch (syncError) {
           console.error('Initial sync failed:', syncError);
           const errorMessage = (syncError as any)?.message || 'Unknown error';

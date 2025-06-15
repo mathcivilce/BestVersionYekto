@@ -304,6 +304,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
             attachments: attachmentMap[e.id] || {}
           })),
           ...replies.map((r: any) => {
+            // Show team member's personal name for accountability and personalization
             const userProfile = userProfiles[r.user_id];
             return {
               ...r, 
@@ -433,7 +434,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
   const { data: reply } = await response.json();
 
-  // Add the current user's name to the reply
+  // Show team member's personal name for accountability and personalization
   const authorName = currentUserProfile
     ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
     : 'You';
@@ -509,7 +510,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
   const { data: reply } = await response.json();
 
-  // Add the current user's name to the reply
+  // Show team member's personal name for accountability and personalization
   const authorName = currentUserProfile
     ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
     : 'You';
@@ -562,7 +563,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
 
       if (error) throw error;
 
-      // Add note to thread
+      // Add note to thread - use personal name for internal notes (different from replies)
       const authorName = currentUserProfile
         ? `${currentUserProfile.first_name} ${currentUserProfile.last_name}`.trim() || 'You'
         : 'You';

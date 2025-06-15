@@ -19,6 +19,7 @@
  * ✅ ENHANCED STRATEGY 1-3 with comprehensive debugging
  * ✅ EDGE CASE PROTECTION for Strategy 2 conflicts
  * ✅ ADVANCED CID MATCHING with field analysis
+ * ✅ SMART DIRECTION DETECTION for inbound/outbound emails
  * 
  * THREADING EVOLUTION:
  * - Phase 1: Basic Microsoft conversationId (unreliable)
@@ -116,6 +117,59 @@ function extractReferences(referencesHeader: string | null): string | null {
   // References header contains space-separated Message-IDs in angle brackets
   // Example: "<id1@domain.com> <id2@domain.com> <id3@domain.com>"
   return referencesHeader.trim();
+}
+
+/**
+ * 🌍 UNIVERSAL RFC2822 HEADER EXTRACTION
+ * Extract embedded RFC2822 headers from email content for universal threading
+ * This enables cross-platform threading compatibility with Gmail, Yahoo, Apple Mail, etc.
+ * 
+ * @param htmlContent - Email HTML content that may contain embedded headers
+ * @returns Object containing extracted RFC2822 headers
+ */
+function extractEmbeddedRFC2822Headers(htmlContent: string): {
+  messageId?: string;
+  inReplyTo?: string;
+  references?: string;
+  threadTopic?: string;
+  threadIndex?: string;
+} {
+  if (!htmlContent) return {};
+  
+  try {
+    // Look for our embedded RFC2822 headers block
+    const headerBlockMatch = htmlContent.match(
+      /<!--\[RFC2822-THREADING-HEADERS-START\]-->(.*?)<!--\[RFC2822-THREADING-HEADERS-END\]-->/s
+    );
+    
+    if (!headerBlockMatch) return {};
+    
+    const headerBlock = headerBlockMatch[1];
+    const headers: any = {};
+    
+    // Extract individual headers using regex
+    const messageIdMatch = headerBlock.match(/Message-ID:\s*([^\n\r]+)/);
+    if (messageIdMatch) headers.messageId = messageIdMatch[1].trim();
+    
+    const inReplyToMatch = headerBlock.match(/In-Reply-To:\s*([^\n\r]+)/);
+    if (inReplyToMatch) headers.inReplyTo = inReplyToMatch[1].trim();
+    
+    const referencesMatch = headerBlock.match(/References:\s*([^\n\r]+)/);
+    if (referencesMatch) headers.references = referencesMatch[1].trim();
+    
+    const threadTopicMatch = headerBlock.match(/Thread-Topic:\s*([^\n\r]+)/);
+    if (threadTopicMatch) headers.threadTopic = threadTopicMatch[1].trim();
+    
+    const threadIndexMatch = headerBlock.match(/Thread-Index:\s*([^\n\r]+)/);
+    if (threadIndexMatch) headers.threadIndex = threadIndexMatch[1].trim();
+    
+    console.log('🌍 Extracted embedded RFC2822 headers:', Object.keys(headers));
+    return headers;
+    
+  } catch (error) {
+    console.error('Error extracting embedded RFC2822 headers:', error);
+    return {};
+  }
 }
 
 /**
@@ -595,9 +649,32 @@ serve(async (req) => {
            * Extract RFC2822 headers for universal email threading
            * These headers are standard across all email platforms
            */
-          const messageIdHeader = extractHeader(email.internetMessageHeaders, 'Message-ID') || email.internetMessageId;
-          const inReplyToHeader = extractHeader(email.internetMessageHeaders, 'In-Reply-To');
-          const referencesHeader = extractReferences(extractHeader(email.internetMessageHeaders, 'References'));
+          /**
+           * 🌍 UNIVERSAL RFC2822 THREADING: Extract headers from multiple sources
+           * Priority: 1) Embedded RFC2822 headers (from our sent emails)
+           *          2) Standard email headers (from external emails)
+           * This ensures cross-platform compatibility with Gmail, Yahoo, Apple Mail, etc.
+           */
+          const embeddedHeaders = extractEmbeddedRFC2822Headers(email.body?.content || '');
+          
+          // 🌍 MULTI-SOURCE RFC2822 HEADER EXTRACTION
+          // Priority: 1) Embedded headers 2) X-prefixed headers 3) Standard headers
+          const messageIdHeader = embeddedHeaders.messageId || 
+                                 extractHeader(email.internetMessageHeaders, 'X-Message-ID-RFC2822') ||
+                                 extractHeader(email.internetMessageHeaders, 'Message-ID') || 
+                                 email.internetMessageId;
+          
+          const inReplyToHeader = embeddedHeaders.inReplyTo || 
+                                 extractHeader(email.internetMessageHeaders, 'X-In-Reply-To-RFC2822') ||
+                                 extractHeader(email.internetMessageHeaders, 'In-Reply-To');
+          
+          const referencesHeader = embeddedHeaders.references || 
+                                  extractHeader(email.internetMessageHeaders, 'X-References-RFC2822') ||
+                                  extractReferences(extractHeader(email.internetMessageHeaders, 'References'));
+          
+          const threadIndexHeader = embeddedHeaders.threadIndex || 
+                                   extractHeader(email.internetMessageHeaders, 'X-Thread-Index') ||
+                                   extractHeader(email.internetMessageHeaders, 'Thread-Index');
           
           /**
            * Store email with enhanced metadata from basic response
@@ -729,8 +806,17 @@ serve(async (req) => {
         const toEmails = msg.toRecipients?.map((r: any) => r.emailAddress?.address).filter(Boolean).join(',') || '';
         
         /**
-         * UNIVERSAL THREADING: Use RFC2822 threading function
-         * This uses RFC2822 standards that work across all email platforms
+         * 🌍 EXTRACT THREADING HEADERS: Get thread index header for this email
+         * Extract from the enhanced email object that was created during fetch
+         */
+        const embeddedHeaders = extractEmbeddedRFC2822Headers(msg.body?.content || '');
+        const threadIndexHeader = embeddedHeaders.threadIndex || 
+                                 extractHeader(msg.internetMessageHeaders, 'X-Thread-Index') ||
+                                 extractHeader(msg.internetMessageHeaders, 'Thread-Index');
+        
+        /**
+         * 🏢 ENTERPRISE RFC 2822 THREADING: Use enterprise-grade threading function
+         * Supports RFC 2822, Microsoft Exchange, and all email providers
          * CRITICAL: This creates the thread relationships for conversation view
          */
         const { data: threadResult, error: threadError } = await supabase
@@ -743,7 +829,9 @@ serve(async (req) => {
             p_to_email: toEmails,
             p_date: msg.receivedDateTime || new Date().toISOString(),
             p_user_id: store.user_id,
-            p_store_id: storeId
+            p_store_id: storeId,
+            p_microsoft_conversation_id: msg.microsoft_conversation_id || msg.conversationId,
+            p_thread_index_header: threadIndexHeader
           });
 
         if (threadError) {
@@ -781,15 +869,16 @@ serve(async (req) => {
           microsoft_conversation_id: msg.microsoft_conversation_id || msg.conversationId,
           has_attachments: attachmentCount > 0, // Smart Reference Architecture: use actual attachment count
           attachment_reference_count: attachmentCount, // Smart Reference Architecture: count for UI
-          // Universal threading headers
+          // 🌍 Universal RFC2822 threading headers for cross-platform compatibility
           message_id_header: msg.message_id_header,
           in_reply_to_header: msg.in_reply_to_header,
           references_header: msg.references_header,
+          thread_index_header: threadIndexHeader, // Outlook compatibility
           conversation_root_id: universalThreadId,
           processed_by_custom_threading: true,
-          // 🆕 NEW FIELDS: Add direction and recipient for proper customer identification
-          direction: 'inbound',                                   // Incoming emails are always inbound during sync
-          recipient: toEmails                                      // Store the actual recipients (our store email)
+          // 🎯 SMART DIRECTION DETECTION: Determine if email is inbound or outbound
+          direction: (msg.from?.emailAddress?.address || '').toLowerCase() === store.email.toLowerCase() ? 'outbound' : 'inbound',
+          recipient: toEmails                                      // Store the actual recipients
         };
 
         /**
@@ -862,6 +951,29 @@ serve(async (req) => {
           console.log(`ℹ️ [ATTACHMENT-DEBUG] Email ${msg.id} - no attachments to process`);
         }
 
+        // 🎯 THREAD ASSIGNMENT INHERITANCE: Check if thread already has an assignment
+        if (universalThreadId) {
+          try {
+            const { data: existingThreadEmail } = await supabase
+              .from('emails')
+              .select('assigned_to')
+              .eq('thread_id', universalThreadId)
+              .eq('user_id', store.user_id)
+              .not('assigned_to', 'is', null)
+              .order('date', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (existingThreadEmail?.assigned_to) {
+              emailRecord.assigned_to = existingThreadEmail.assigned_to;
+              console.log('🔗 Inheriting thread assignment for sync:', existingThreadEmail.assigned_to);
+            }
+          } catch (assignmentError) {
+            // Non-fatal error - continue without assignment inheritance
+            console.log('ℹ️ No existing thread assignment found (this is normal for new threads)');
+          }
+        }
+
         emailsToSave.push(emailRecord);
       }
 
@@ -885,26 +997,98 @@ serve(async (req) => {
 
         try {
           await retryOperation(async () => {
+            // 🎯 ENHANCED UPSERT: Handle both new emails and sent emails synced back from Microsoft
             const { error: saveError } = await supabase
               .from('emails')
               .upsert(batch, {
-                onConflict: 'graph_id,user_id', // Prevent duplicates based on Graph ID and user
+                onConflict: 'graph_id,user_id', // Primary: Prevent duplicates based on Graph ID and user
                 ignoreDuplicates: false
               });
 
             if (saveError) {
-              /**
-               * DATABASE ERROR CLASSIFICATION
-               * Classify database errors for better debugging
-               */
-              if (saveError.message.includes('timeout')) {
-                debugInfo.failureReason = 'DATABASE_TIMEOUT';
-              } else if (saveError.message.includes('connection')) {
-                debugInfo.failureReason = 'DATABASE_CONNECTION_ERROR';
+              // If primary upsert fails, try alternative upsert for sent emails without graph_id
+              if (saveError.message.includes('duplicate') || saveError.message.includes('conflict')) {
+                console.log('🔄 Attempting alternative upsert for sent emails...');
+                
+                // Separate emails with and without graph_id
+                const emailsWithGraphId = batch.filter(email => email.graph_id);
+                const emailsWithoutGraphId = batch.filter(email => !email.graph_id);
+                
+                // Standard upsert for emails with graph_id
+                if (emailsWithGraphId.length > 0) {
+                  const { error: graphIdError } = await supabase
+                    .from('emails')
+                    .upsert(emailsWithGraphId, {
+                      onConflict: 'graph_id,user_id',
+                      ignoreDuplicates: false
+                    });
+                  
+                  if (graphIdError) throw graphIdError;
+                }
+                
+                // Alternative upsert for sent emails (may have been stored locally first)
+                if (emailsWithoutGraphId.length > 0) {
+                  const { error: sentEmailError } = await supabase
+                    .from('emails')
+                    .upsert(emailsWithoutGraphId, {
+                      onConflict: 'message_id_header,user_id,store_id', // Match by Message-ID header
+                      ignoreDuplicates: false
+                    });
+                  
+                  if (sentEmailError) {
+                    // If still failing, try individual inserts to handle partial failures
+                    console.warn('⚠️ Batch upsert failed, trying individual upserts for sent emails...');
+                    for (const email of emailsWithoutGraphId) {
+                      try {
+                        // Check if email already exists by message_id_header
+                        const { data: existingEmail } = await supabase
+                          .from('emails')
+                          .select('id, graph_id')
+                          .eq('message_id_header', email.message_id_header)
+                          .eq('user_id', email.user_id)
+                          .eq('store_id', email.store_id)
+                          .maybeSingle();
+                        
+                        if (existingEmail) {
+                          // Update existing email with graph_id from sync
+                          await supabase
+                            .from('emails')
+                            .update({ 
+                              graph_id: email.graph_id,
+                              microsoft_conversation_id: email.microsoft_conversation_id,
+                              date: email.date // Update with actual sent date from Microsoft
+                            })
+                            .eq('id', existingEmail.id);
+                          
+                          console.log(`✅ Updated existing sent email ${existingEmail.id} with sync data`);
+                        } else {
+                          // Insert new email
+                          await supabase
+                            .from('emails')
+                            .insert(email);
+                          
+                          console.log(`✅ Inserted new email ${email.id}`);
+                        }
+                      } catch (individualError) {
+                        console.error(`❌ Failed to process individual email:`, individualError);
+                      }
+                    }
+                  }
+                }
               } else {
-                debugInfo.failureReason = 'DATABASE_SAVE_ERROR';
+                /**
+                 * DATABASE ERROR CLASSIFICATION
+                 * Classify database errors for better debugging
+                 */
+                if (saveError.message.includes('timeout')) {
+                  debugInfo.failureReason = 'DATABASE_TIMEOUT';
+                } else if (saveError.message.includes('connection')) {
+                  debugInfo.failureReason = 'DATABASE_CONNECTION_ERROR';
+                } else {
+                  debugInfo.failureReason = 'DATABASE_SAVE_ERROR';
+                }
+                throw saveError;
               }
-              throw saveError;
             }
           });
 

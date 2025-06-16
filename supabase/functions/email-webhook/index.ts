@@ -162,6 +162,7 @@ serve(async (req) => {
     // Multiple notifications can be batched together for efficiency
     for (const notification of payload.value) {
       const { subscriptionId, clientState, resource } = notification;
+      const processingStartTime = Date.now();
       
       // Verify subscription exists and clientState matches for security
       // Client state acts as a shared secret to verify notification authenticity
@@ -172,7 +173,190 @@ serve(async (req) => {
         .single();
 
       if (subError || !subscription) {
-        console.error('Subscription not found:', subscriptionId);
+        console.error('🚨 Subscription not found:', subscriptionId);
+        
+        // 📊 SOLUTION 2: Enhanced logging for orphaned subscriptions
+        await supabase
+          .from('webhook_errors')
+          .insert({
+            subscription_id: subscriptionId,
+            error_type: 'subscription_not_found',
+            error_details: {
+              error: subError?.message || 'Subscription not found in database',
+              resource: resource,
+              clientState: clientState,
+              timestamp: new Date().toISOString(),
+              webhookPayload: notification
+            },
+            timestamp: new Date().toISOString()
+          });
+
+        // 🧹 SOLUTION 3: Attempt auto-cleanup of orphaned subscription
+        try {
+          console.log('🔧 Attempting auto-cleanup of orphaned subscription:', subscriptionId);
+          
+          // Try to find any store that might own this subscription
+          // We'll use the first available connected store with a valid token
+          const { data: availableStores } = await supabase
+            .from('stores')
+            .select('id, name, email, access_token')
+            .eq('platform', 'outlook')
+            .eq('connected', true)
+            .not('access_token', 'is', null)
+            .limit(1);
+
+          if (availableStores && availableStores.length > 0) {
+            const store = availableStores[0];
+            console.log(`🔧 Using store ${store.name} for cleanup attempt`);
+            
+            const graphClient = Client.init({
+              authProvider: (done) => {
+                done(null, store.access_token);
+              }
+            });
+
+            // 🔧 SOLUTION 2: Enhanced cleanup with smart 404 handling
+            try {
+              await graphClient
+                .api(`/subscriptions/${subscriptionId}`)
+                .delete();
+              
+              console.log('✅ Successfully cleaned up orphaned subscription:', subscriptionId);
+              
+              // Log the successful cleanup
+              await supabase
+                .from('webhook_cleanup_log')
+                .insert({
+                  store_id: store.id,
+                  subscription_id: subscriptionId,
+                  action: 'auto_cleanup_orphaned_subscription',
+                  details: {
+                    trigger: 'webhook_notification',
+                    resource: resource,
+                    cleanupStore: store.name,
+                    cleanupMethod: 'direct_deletion',
+                    timestamp: new Date().toISOString()
+                  },
+                  timestamp: new Date().toISOString()
+                });
+
+              // Update the error record to mark it as resolved
+              await supabase
+                .from('webhook_errors')
+                .update({
+                  resolved: true,
+                  resolution_notes: `Auto-cleaned up orphaned subscription using store: ${store.name}`
+                })
+                .eq('subscription_id', subscriptionId)
+                .eq('resolved', false);
+
+            } catch (deleteError) {
+              if (deleteError.statusCode === 404) {
+                console.log('🔍 Subscription returned 404, verifying if truly deleted...');
+                
+                // Verify token works to distinguish between "not found" vs "access denied"
+                try {
+                  await graphClient.api('/me').get();
+                  
+                  // Token works, subscription truly doesn't exist
+                  console.log('✅ Orphaned subscription already deleted (verified with token test):', subscriptionId);
+                  
+                  // Log as successful cleanup since it's effectively resolved
+                  await supabase
+                    .from('webhook_cleanup_log')
+                    .insert({
+                      store_id: store.id,
+                      subscription_id: subscriptionId,
+                      action: 'auto_cleanup_orphaned_subscription',
+                      details: {
+                        trigger: 'webhook_notification',
+                        resource: resource,
+                        cleanupStore: store.name,
+                        cleanupMethod: 'already_deleted_404',
+                        tokenValidated: true,
+                        timestamp: new Date().toISOString()
+                      },
+                      timestamp: new Date().toISOString()
+                    });
+
+                  // Mark error as resolved since subscription is effectively gone
+                  await supabase
+                    .from('webhook_errors')
+                    .update({
+                      resolved: true,
+                      resolution_notes: `Orphaned subscription already deleted on Microsoft side (404 with valid token)`
+                    })
+                    .eq('subscription_id', subscriptionId)
+                    .eq('resolved', false);
+                    
+                } catch (tokenError) {
+                  console.warn('⚠️ 404 might be due to token issue, not actual deletion:', tokenError);
+                  
+                  // Log as failed cleanup since we can't verify
+                  await supabase
+                    .from('webhook_cleanup_log')
+                    .insert({
+                      store_id: store.id,
+                      subscription_id: subscriptionId,
+                      action: 'auto_cleanup_failed',
+                      details: {
+                        error: `404 with token validation failure: ${tokenError.message}`,
+                        trigger: 'webhook_notification',
+                        resource: resource,
+                        cleanupStore: store.name,
+                        tokenValidated: false,
+                        timestamp: new Date().toISOString()
+                      },
+                      timestamp: new Date().toISOString()
+                    });
+                }
+              } else {
+                // Non-404 error, log as failed cleanup
+                console.error('❌ Auto-cleanup failed with non-404 error:', deleteError);
+                
+                await supabase
+                  .from('webhook_cleanup_log')
+                  .insert({
+                    store_id: store.id,
+                    subscription_id: subscriptionId,
+                    action: 'auto_cleanup_failed',
+                    details: {
+                      error: deleteError.message || 'Unknown error',
+                      statusCode: deleteError.statusCode,
+                      trigger: 'webhook_notification',
+                      resource: resource,
+                      cleanupStore: store.name,
+                      timestamp: new Date().toISOString()
+                    },
+                    timestamp: new Date().toISOString()
+                  });
+              }
+            }
+
+          } else {
+            console.warn('⚠️ No available stores for auto-cleanup');
+          }
+          
+        } catch (cleanupError) {
+          console.error('❌ Auto-cleanup failed:', cleanupError);
+          
+          // Log the failed cleanup attempt
+          await supabase
+            .from('webhook_cleanup_log')
+            .insert({
+              store_id: null,
+              subscription_id: subscriptionId,
+              action: 'auto_cleanup_failed',
+              details: {
+                error: cleanupError.message,
+                trigger: 'webhook_notification',
+                resource: resource,
+                timestamp: new Date().toISOString()
+              },
+              timestamp: new Date().toISOString()
+            });
+        }
+        
         continue; // Skip this notification if subscription is invalid
       }
 
@@ -468,26 +652,72 @@ serve(async (req) => {
             // Don't fail email processing if attachment saving fails
           }
         }
+
+        // 📊 SOLUTION 2: Log successful webhook processing metrics
+        const processingTime = Date.now() - processingStartTime;
+        await supabase
+          .from('webhook_metrics')
+          .insert({
+            subscription_id: subscriptionId,
+            store_id: store.id,
+            processing_time_ms: processingTime,
+            success: true,
+            email_count: 1,
+            timestamp: new Date().toISOString()
+          });
         
-      } catch (error) {
-        console.error('Error processing message:', error);
-        
-        // Handle token expiration by updating store status
-        // When access tokens expire, Graph API returns 401 Unauthorized
-        if (error.statusCode === 401) {
-          console.log('Access token expired for store:', store.id);
+              } catch (error) {
+          console.error('Error processing message:', error);
           
-          // Mark store as having issues and disconnected
-          // This will trigger token refresh logic in the frontend
+          // 📊 SOLUTION 2: Log failed webhook processing metrics
+          const processingTime = Date.now() - processingStartTime;
           await supabase
-            .from('stores')
-            .update({ 
-              status: 'issue',                // Indicates authentication issue
-              connected: false                // Mark as disconnected for UI
-            })
-            .eq('id', store.id);
+            .from('webhook_metrics')
+            .insert({
+              subscription_id: subscriptionId,
+              store_id: store.id,
+              processing_time_ms: processingTime,
+              success: false,
+              error_message: error.message || 'Unknown error',
+              email_count: 0,
+              timestamp: new Date().toISOString()
+            });
+
+          // Log detailed error information
+          await supabase
+            .from('webhook_errors')
+            .insert({
+              subscription_id: subscriptionId,
+              error_type: 'message_processing_error',
+              error_details: {
+                error: error.message,
+                statusCode: error.statusCode,
+                resource: resource,
+                storeId: store.id,
+                storeName: store.name,
+                timestamp: new Date().toISOString()
+              },
+              store_id: store.id,
+              user_id: store.user_id,
+              timestamp: new Date().toISOString()
+            });
+          
+          // Handle token expiration by updating store status
+          // When access tokens expire, Graph API returns 401 Unauthorized
+          if (error.statusCode === 401) {
+            console.log('Access token expired for store:', store.id);
+            
+            // Mark store as having issues and disconnected
+            // This will trigger token refresh logic in the frontend
+            await supabase
+              .from('stores')
+              .update({ 
+                status: 'issue',                // Indicates authentication issue
+                connected: false                // Mark as disconnected for UI
+              })
+              .eq('id', store.id);
+          }
         }
-      }
     }
 
     // Return success response to acknowledge webhook processing

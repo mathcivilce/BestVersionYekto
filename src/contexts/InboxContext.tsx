@@ -935,47 +935,198 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const store = stores.find(s => s.id === id);
       if (!store) return;
 
-      let accessToken = store.access_token;
+      console.log(`🔌 Starting enhanced disconnection for store: ${store.name} (${store.email})`);
 
-      // Try to get a fresh token using token manager if available
+      // 🔧 ENHANCED DISCONNECTION LOGIC
+      let accessToken = store.access_token;
+      let webhookCleanupSuccess = false;
+      const cleanupAttempts: string[] = [];
+
+      // Step 1: Try to get a fresh token using multiple methods
+      console.log('🔑 Attempting token refresh for clean disconnection...');
+      
+      // Method 1: Token manager refresh
       if (tokenManager && store.email) {
         try {
           const account = tokenManager.getAccountForStore(store.email);
           if (account) {
             accessToken = await tokenManager.getValidToken(id, account, requiredScopes);
+            cleanupAttempts.push('token_manager_refresh_success');
+            console.log('✅ Token refreshed via token manager');
           }
         } catch (tokenError) {
-          console.warn('Could not refresh token for disconnection:', tokenError);
-          // Continue with stored token
+          console.warn('Token manager refresh failed:', tokenError);
+          cleanupAttempts.push('token_manager_refresh_failed');
         }
       }
 
-      // Get webhook subscription
+      // Method 2: Direct refresh token call if token manager failed
+      if (!accessToken && store.refresh_token) {
+        try {
+          console.log('🔄 Attempting direct token refresh...');
+          const refreshResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/refresh-tokens`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ storeId: id })
+          });
+
+          if (refreshResponse.ok) {
+            const refreshData = await refreshResponse.json();
+            if (refreshData.results?.[0]?.success) {
+              // Get the updated store data
+              const { data: updatedStore } = await supabase
+                .from('stores')
+                .select('access_token')
+                .eq('id', id)
+                .single();
+              
+              if (updatedStore?.access_token) {
+                accessToken = updatedStore.access_token;
+                cleanupAttempts.push('direct_refresh_success');
+                console.log('✅ Token refreshed via direct refresh');
+              }
+            }
+          }
+        } catch (refreshError) {
+          console.warn('Direct token refresh failed:', refreshError);
+          cleanupAttempts.push('direct_refresh_failed');
+        }
+      }
+
+      // Step 2: Get webhook subscription details
       const { data: subscription } = await supabase
         .from('graph_subscriptions')
-        .select('subscription_id')
+        .select('subscription_id, client_state, resource')
         .eq('store_id', id)
         .single();
 
-      if (subscription && accessToken) {
-        try {
-          // Try to delete the webhook subscription
-          const graphClient = Client.init({
-            authProvider: (done) => {
-              done(null, accessToken);
-            }
-          });
+      // Step 3: Enhanced webhook cleanup with multiple strategies
+      if (subscription) {
+        console.log(`🧹 Attempting webhook cleanup for subscription: ${subscription.subscription_id}`);
 
-          await graphClient
-            .api(`/subscriptions/${subscription.subscription_id}`)
-            .delete();
+        // Strategy 1: Use current/refreshed token
+        if (accessToken) {
+          try {
+            const graphClient = Client.init({
+              authProvider: (done) => {
+                done(null, accessToken);
+              }
+            });
 
-        } catch (webhookError) {
-          console.warn('Could not clean up webhook subscription:', webhookError);
-          // Continue with store deletion anyway
+            await graphClient
+              .api(`/subscriptions/${subscription.subscription_id}`)
+              .delete();
+
+            webhookCleanupSuccess = true;
+            cleanupAttempts.push('primary_cleanup_success');
+            console.log('✅ Webhook subscription deleted successfully');
+
+          } catch (webhookError) {
+            console.warn('Primary webhook cleanup failed:', webhookError);
+            cleanupAttempts.push(`primary_cleanup_failed: ${webhookError instanceof Error ? webhookError.message : String(webhookError)}`);
+          }
         }
+
+        // Strategy 2: Try using other connected stores' tokens (if primary failed)
+        if (!webhookCleanupSuccess) {
+          console.log('🔄 Attempting webhook cleanup using other connected stores...');
+          
+          const { data: otherStores } = await supabase
+            .from('stores')
+            .select('id, name, access_token')
+            .eq('platform', 'outlook')
+            .eq('connected', true)
+            .not('access_token', 'is', null)
+            .neq('id', id)
+            .limit(3);
+
+          if (otherStores && otherStores.length > 0) {
+            for (const otherStore of otherStores) {
+              try {
+                console.log(`🔧 Trying cleanup with store: ${otherStore.name}`);
+                
+                const graphClient = Client.init({
+                  authProvider: (done) => {
+                    done(null, otherStore.access_token);
+                  }
+                });
+
+                await graphClient
+                  .api(`/subscriptions/${subscription.subscription_id}`)
+                  .delete();
+
+                webhookCleanupSuccess = true;
+                cleanupAttempts.push(`alternate_cleanup_success: ${otherStore.name}`);
+                console.log(`✅ Webhook cleanup successful using store: ${otherStore.name}`);
+                break;
+
+              } catch (altError) {
+                console.warn(`Alternate cleanup failed with ${otherStore.name}:`, altError);
+                cleanupAttempts.push(`alternate_cleanup_failed: ${otherStore.name} - ${altError instanceof Error ? altError.message : String(altError)}`);
+              }
+            }
+          } else {
+            cleanupAttempts.push('no_alternate_stores_available');
+          }
+        }
+
+        // Strategy 3: Schedule cleanup for later if all immediate attempts failed
+        if (!webhookCleanupSuccess) {
+          console.log('⏰ Scheduling webhook cleanup for later...');
+          
+          try {
+            // Log the orphaned subscription for later cleanup
+            await supabase
+              .from('webhook_cleanup_log')
+              .insert({
+                store_id: id,
+                subscription_id: subscription.subscription_id,
+                action: 'cleanup_scheduled_on_disconnect',
+                details: {
+                  storeName: store.name,
+                  storeEmail: store.email,
+                  resource: subscription.resource,
+                  clientState: subscription.client_state,
+                  cleanupAttempts: cleanupAttempts,
+                  scheduledAt: new Date().toISOString(),
+                  reason: 'immediate_cleanup_failed_during_disconnect'
+                },
+                timestamp: new Date().toISOString()
+              });
+
+            cleanupAttempts.push('cleanup_scheduled_for_later');
+            console.log('📝 Webhook cleanup scheduled for later processing');
+
+          } catch (scheduleError) {
+            console.error('Failed to schedule cleanup:', scheduleError);
+            cleanupAttempts.push(`schedule_failed: ${scheduleError instanceof Error ? scheduleError.message : String(scheduleError)}`);
+          }
+        }
+
+        // Log comprehensive cleanup results
+        await supabase
+          .from('webhook_cleanup_log')
+          .insert({
+            store_id: id,
+            subscription_id: subscription.subscription_id,
+            action: webhookCleanupSuccess ? 'disconnect_cleanup_success' : 'disconnect_cleanup_partial',
+            details: {
+              storeName: store.name,
+              storeEmail: store.email,
+              cleanupSuccess: webhookCleanupSuccess,
+              cleanupAttempts: cleanupAttempts,
+              timestamp: new Date().toISOString()
+            },
+            timestamp: new Date().toISOString()
+          });
       }
 
+      // Step 4: Always delete database records (even if webhook cleanup failed)
+      console.log('🗑️ Cleaning up database records...');
+      
       // Delete subscription record
       await supabase
         .from('graph_subscriptions')
@@ -1009,6 +1160,32 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Update local state
       setStores(prev => prev.filter(store => store.id !== id));
       setEmails(prev => prev.filter(email => email.store_id !== id));
+
+      // 🧹 SOLUTION 1: Automatic post-disconnection cleanup (asynchronous)
+      try {
+        console.log('🧹 Running automatic cleanup after disconnection...');
+        
+        // Run cleanup asynchronously (non-blocking for user experience)
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cleanup-orphaned-subscriptions`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            'Content-Type': 'application/json'
+          }
+        }).then(async response => {
+          if (response.ok) {
+            const result = await response.json();
+            console.log('✅ Post-disconnection cleanup completed:', result);
+          } else {
+            console.warn('⚠️ Post-disconnection cleanup failed (non-critical):', response.status);
+          }
+        }).catch(error => {
+          console.warn('⚠️ Post-disconnection cleanup error (non-critical):', error);
+        });
+        
+      } catch (error) {
+        console.warn('⚠️ Could not initiate post-disconnection cleanup:', error);
+      }
 
       toast.success('Store disconnected successfully');
     } catch (error) {

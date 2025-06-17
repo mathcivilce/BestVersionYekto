@@ -19,7 +19,6 @@ import React, { useMemo, useEffect, useState } from 'react';
 import LazyAttachmentImage from './LazyAttachmentImage';
 import CollapsibleQuotedContent from './email/CollapsibleQuotedContent';
 import EnterpriseCollapsibleQuotedContent from './email/EnterpriseCollapsibleQuotedContent';
-import { parseEmailContent } from '../utils/emailContentParser';
 import { EnterpriseEmailParser, EnterpriseEmailContent } from '../utils/enterpriseEmailParserBrowser';
 
 interface EmailContentWithAttachmentsProps {
@@ -80,70 +79,53 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
   };
 
   // Enterprise email parsing state
-  const [enterpriseEmailContent, setEnterpriseEmailContent] = useState<EnterpriseEmailContent | null>(null);
-  const [isParsingEnterprise, setIsParsingEnterprise] = useState(false);
+  const [parsedEmail, setParsedEmail] = useState<EnterpriseEmailContent | null>(null);
+  const [isParsing, setIsParsing] = useState(true);
 
-  // Parse with enterprise parser if enabled
+  // Parse with enterprise parser
   useEffect(() => {
-    if (!enableQuotedContentCollapsing || !useEnterpriseParser) return;
-
-    const content = htmlContent || plainContent || '';
-    if (!content) return;
-
-    setIsParsingEnterprise(true);
-    
-    EnterpriseEmailParser.fromHtml(content)
-      .then(result => {
-        setEnterpriseEmailContent(result);
-      })
-      .catch(error => {
-        console.warn('Enterprise parsing failed, falling back to basic parser:', error);
-        setEnterpriseEmailContent(null);
-      })
-      .finally(() => {
-        setIsParsingEnterprise(false);
-      });
-  }, [htmlContent, plainContent, enableQuotedContentCollapsing, useEnterpriseParser]);
-
-  // Parse quoted content (fallback or when enterprise parser is disabled)
-  const emailContentParsed = useMemo(() => {
-    // If enterprise parser is enabled and we have results, use those
-    if (useEnterpriseParser && enterpriseEmailContent) {
-      return {
-        originalContent: enterpriseEmailContent.originalContent,
-        quotedContent: enterpriseEmailContent.quotedContent,
-        hasQuotedContent: enterpriseEmailContent.hasQuotedContent,
-        quotedHeaders: enterpriseEmailContent.quotedHeaders
-      };
-    }
-
-    // Fallback to basic parser or when enterprise parser is disabled
+    // Always use the enterprise parser if collapsing is enabled.
     if (!enableQuotedContentCollapsing) {
-      return {
+      setParsedEmail({
         originalContent: htmlContent || plainContent || '',
         quotedContent: '',
         hasQuotedContent: false,
-        quotedHeaders: undefined
-      };
+        metadata: { isMultipart: false, hasAttachments: false, contentType: '' },
+      });
+      setIsParsing(false);
+      return;
     }
 
     const content = htmlContent || plainContent || '';
     if (!content) {
-      return {
-        originalContent: '',
-        quotedContent: '',
-        hasQuotedContent: false,
-        quotedHeaders: undefined
-      };
+      setParsedEmail(null);
+      setIsParsing(false);
+      return;
     }
 
-    return parseEmailContent(content);
-  }, [htmlContent, plainContent, enableQuotedContentCollapsing, useEnterpriseParser, enterpriseEmailContent]);
+    setIsParsing(true);
+    
+    EnterpriseEmailParser.fromHtml(content)
+      .then(setParsedEmail)
+      .catch(error => {
+        console.error('Enterprise parsing failed:', error);
+        // On failure, treat the whole content as original to avoid blank screens.
+        setParsedEmail({
+          originalContent: content,
+          quotedContent: '',
+          hasQuotedContent: false,
+          metadata: { isMultipart: false, hasAttachments: false, contentType: '' },
+        });
+      })
+      .finally(() => {
+        setIsParsing(false);
+      });
+  }, [htmlContent, plainContent, enableQuotedContentCollapsing]);
 
   // Process email content and extract CID references
   const processedContent = useMemo((): ProcessedContent => {
     // Use the original (non-quoted) content for CID processing
-    const contentToProcess = emailContentParsed.originalContent;
+    const contentToProcess = parsedEmail?.originalContent || '';
     
     if (!contentToProcess) {
       return { parts: [], cidCount: 0 };
@@ -225,7 +207,7 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
     }
 
     return { parts, cidCount };
-  }, [emailContentParsed.originalContent, htmlContent, plainContent]);
+  }, [parsedEmail, htmlContent, plainContent]);
 
   // Helper function to escape HTML
   const escapeHtml = (text: string): string => {
@@ -233,6 +215,14 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
     div.textContent = text;
     return div.innerHTML;
   };
+
+  if (isParsing) {
+    return (
+      <div className={`email-content-with-attachments ${className}`}>
+        <p>Loading email...</p>
+      </div>
+    );
+  }
 
   // Render the component
   return (
@@ -248,75 +238,40 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
       >
         {processedContent.parts.map((part, index) => {
           if (part.type === 'html') {
+            const sanitizedHtml = sanitizeHtml(part.content);
             return (
               <div
-                key={`html-${index}`}
-                className="email-html-content prose prose-sm max-w-none"
-                dangerouslySetInnerHTML={{ __html: sanitizeHtml(part.content) }}
-                style={{
-                  lineHeight: '1.6',
-                  color: '#374151',
-                  whiteSpace: 'pre-wrap', // Preserve spacing and line breaks
-                  wordWrap: 'break-word', // Handle long words properly
-                  overflowWrap: 'break-word', // Modern browsers word wrapping
-                  contain: 'layout style', // Prevent style leakage
-                  isolation: 'isolate' // Create new stacking context
-                }}
+                key={index}
+                className="email-html-part"
+                dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
               />
             );
-          } else if (part.type === 'cid-image' && part.cid) {
+          }
+          if (part.type === 'cid-image' && emailId && part.cid) {
             return (
-              <div key={`cid-${index}`} className="my-2">
-                <LazyAttachmentImage
-                  cid={part.cid}
-                  alt={part.alt || 'Email image'}
-                  maxWidth={maxImageWidth}
-                  maxHeight={maxImageHeight}
-                  className="inline-block"
-                />
-              </div>
+              <LazyAttachmentImage
+                key={index}
+                emailId={emailId}
+                cid={part.cid}
+                alt={part.alt}
+                maxWidth={maxImageWidth}
+                maxHeight={maxImageHeight}
+              />
             );
           }
           return null;
         })}
       </div>
 
-      {/* Render quoted content if it exists - remove spacing */}
-      {emailContentParsed.hasQuotedContent && enableQuotedContentCollapsing && (
-        <div className="mt-1">
-          {useEnterpriseParser && enterpriseEmailContent ? (
-            <EnterpriseCollapsibleQuotedContent
-              quotedContent={emailContentParsed.quotedContent}
-              quotedHeaders={enterpriseEmailContent.quotedHeaders}
-              metadata={enterpriseEmailContent.metadata}
-            />
-          ) : (
-            <CollapsibleQuotedContent
-              quotedContent={emailContentParsed.quotedContent}
-              quotedHeaders={emailContentParsed.quotedHeaders}
-            />
-          )}
-        </div>
-      )}
-
-      {/* Enterprise parsing indicator */}
-      {isParsingEnterprise && (
-        <div className="mt-2 text-xs text-blue-600 flex items-center gap-2">
-          <div className="animate-spin w-3 h-3 border border-blue-600 border-t-transparent rounded-full"></div>
-          Parsing with RFC standards...
-        </div>
-      )}
-
-      {/* Development info */}
-      {false && processedContent.cidCount > 0 && (
-        <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-          <div className="text-sm font-medium text-blue-800 mb-2">
-            📎 Phase 2: Lazy Loading Active
-          </div>
-          <div className="text-xs text-blue-600">
-            Found {processedContent.cidCount} inline image(s) with CID references
-          </div>
-        </div>
+      {/* Render quoted content if it exists */}
+      {parsedEmail && parsedEmail.hasQuotedContent && (
+         <EnterpriseCollapsibleQuotedContent
+            quotedContent={parsedEmail.quotedContent}
+            headers={parsedEmail.quotedHeaders}
+            emailId={emailId}
+            maxImageWidth={maxImageWidth}
+            maxHeight={maxImageHeight}
+          />
       )}
     </div>
   );

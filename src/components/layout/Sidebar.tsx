@@ -89,13 +89,16 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
 
       // Fetch counts for each store
       for (const store of emailStores) {
-        const { count } = await supabase
-          .from('emails')
-          .select('*', { count: 'exact', head: true })
-          .eq('store_id', store.id)
-          .eq('status', 'open');
+        const { data, error } = await supabase.rpc('count_open_threads_by_store', {
+          p_store_id: store.id
+        });
 
-        counts[store.id] = count || 0;
+        if (error) {
+          console.error(`Error fetching ticket count for store ${store.id}:`, error);
+          counts[store.id] = 0; // Set count to 0 on error
+        } else {
+          counts[store.id] = data || 0;
+        }
       }
 
       setTicketCounts(counts);

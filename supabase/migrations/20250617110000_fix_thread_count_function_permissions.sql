@@ -1,0 +1,1 @@
+ALTER FUNCTION count_open_threads_by_store(p_store_id UUID) SECURITY DEFINER; 

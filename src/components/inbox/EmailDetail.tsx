@@ -39,6 +39,7 @@ const EmailDetail: React.FC<EmailDetailProps> = ({ email, onBack }) => {
   const [realtimeSubscription, setRealtimeSubscription] = useState<any>(null);
   const [currentStore, setCurrentStore] = useState<any>(null);
 
+
   const navigate = useNavigate();
   const { deleteEmail, markAsRead } = useInbox();
 

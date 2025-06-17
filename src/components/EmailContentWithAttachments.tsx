@@ -1,5 +1,5 @@
 /**
- * Email Content with Attachments - Phase 2: Lazy Loading
+ * Email Content with Attachments - Phase 3: Quoted Content Collapsing
  * 
  * This component processes email HTML content and automatically replaces
  * cid: references with lazily-loaded images. It provides seamless
@@ -8,21 +8,29 @@
  * Features:
  * - Automatic CID detection and replacement
  * - Seamless integration with LazyAttachmentImage
+ * - Universal quoted content detection and collapsing
  * - HTML sanitization for security
  * - Progressive enhancement of email content
  * - Responsive image handling
+ * - Gmail-style quoted content UI
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import LazyAttachmentImage from './LazyAttachmentImage';
+import CollapsibleQuotedContent from './email/CollapsibleQuotedContent';
+import EnterpriseCollapsibleQuotedContent from './email/EnterpriseCollapsibleQuotedContent';
+import { parseEmailContent } from '../utils/emailContentParser';
+import { EnterpriseEmailParser, EnterpriseEmailContent } from '../utils/enterpriseEmailParserBrowser';
 
 interface EmailContentWithAttachmentsProps {
   htmlContent?: string;
   plainContent?: string;
-  emailId: string;
+  emailId?: string;
   className?: string;
   maxImageWidth?: number;
   maxImageHeight?: number;
+  enableQuotedContentCollapsing?: boolean;
+  useEnterpriseParser?: boolean;
 }
 
 interface ProcessedContent {
@@ -41,7 +49,9 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
   emailId,
   className = '',
   maxImageWidth = 600,
-  maxImageHeight = 400
+  maxImageHeight = 400,
+  enableQuotedContentCollapsing = true,
+  useEnterpriseParser = true
 }) => {
 
   // Extract body content from complete HTML documents while preserving all formatting
@@ -69,11 +79,73 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
     return html;
   };
 
+  // Enterprise email parsing state
+  const [enterpriseEmailContent, setEnterpriseEmailContent] = useState<EnterpriseEmailContent | null>(null);
+  const [isParsingEnterprise, setIsParsingEnterprise] = useState(false);
+
+  // Parse with enterprise parser if enabled
+  useEffect(() => {
+    if (!enableQuotedContentCollapsing || !useEnterpriseParser) return;
+
+    const content = htmlContent || plainContent || '';
+    if (!content) return;
+
+    setIsParsingEnterprise(true);
+    
+    EnterpriseEmailParser.fromHtml(content)
+      .then(result => {
+        setEnterpriseEmailContent(result);
+      })
+      .catch(error => {
+        console.warn('Enterprise parsing failed, falling back to basic parser:', error);
+        setEnterpriseEmailContent(null);
+      })
+      .finally(() => {
+        setIsParsingEnterprise(false);
+      });
+  }, [htmlContent, plainContent, enableQuotedContentCollapsing, useEnterpriseParser]);
+
+  // Parse quoted content (fallback or when enterprise parser is disabled)
+  const emailContentParsed = useMemo(() => {
+    // If enterprise parser is enabled and we have results, use those
+    if (useEnterpriseParser && enterpriseEmailContent) {
+      return {
+        originalContent: enterpriseEmailContent.originalContent,
+        quotedContent: enterpriseEmailContent.quotedContent,
+        hasQuotedContent: enterpriseEmailContent.hasQuotedContent,
+        quotedHeaders: enterpriseEmailContent.quotedHeaders
+      };
+    }
+
+    // Fallback to basic parser or when enterprise parser is disabled
+    if (!enableQuotedContentCollapsing) {
+      return {
+        originalContent: htmlContent || plainContent || '',
+        quotedContent: '',
+        hasQuotedContent: false,
+        quotedHeaders: undefined
+      };
+    }
+
+    const content = htmlContent || plainContent || '';
+    if (!content) {
+      return {
+        originalContent: '',
+        quotedContent: '',
+        hasQuotedContent: false,
+        quotedHeaders: undefined
+      };
+    }
+
+    return parseEmailContent(content);
+  }, [htmlContent, plainContent, enableQuotedContentCollapsing, useEnterpriseParser, enterpriseEmailContent]);
+
   // Process email content and extract CID references
   const processedContent = useMemo((): ProcessedContent => {
-    const content = htmlContent || plainContent || '';
+    // Use the original (non-quoted) content for CID processing
+    const contentToProcess = emailContentParsed.originalContent;
     
-    if (!content) {
+    if (!contentToProcess) {
       return { parts: [], cidCount: 0 };
     }
 
@@ -82,14 +154,14 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
       return {
         parts: [{
           type: 'html',
-          content: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(plainContent)}</pre>`
+          content: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(contentToProcess)}</pre>`
         }],
         cidCount: 0
       };
     }
 
     // Extract body content from complete HTML documents to prevent duplication
-    const cleanedHtmlContent = extractBodyContent(htmlContent!);
+    const cleanedHtmlContent = extractBodyContent(contentToProcess);
 
     // Find all CID references in HTML
     const cidRegex = /<img[^>]+src=["']cid:([^"']+)["'][^>]*>/gi;
@@ -153,7 +225,7 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
     }
 
     return { parts, cidCount };
-  }, [htmlContent, plainContent]);
+  }, [emailContentParsed.originalContent, htmlContent, plainContent]);
 
   // Helper function to escape HTML
   const escapeHtml = (text: string): string => {
@@ -165,35 +237,6 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
   // Render the component
   return (
     <div className={`email-content-with-attachments ${className}`}>
-      {/* Debug info for development and production analysis */}
-      {false && (
-        <details className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-          <summary className="text-sm font-medium text-gray-700 cursor-pointer">
-            🐛 Debug: Email Content Analysis
-          </summary>
-          <div className="mt-2 text-xs text-gray-600 space-y-2">
-            <div>
-              <strong>HTML Content Length:</strong> {htmlContent?.length || 0}
-            </div>
-            <div>
-              <strong>Plain Content Length:</strong> {plainContent?.length || 0}
-            </div>
-            <div>
-              <strong>Parts Count:</strong> {processedContent.parts.length}
-            </div>
-            <div>
-              <strong>CID Count:</strong> {processedContent.cidCount}
-            </div>
-            <div>
-              <strong>Raw HTML Content (first 500 chars):</strong>
-              <pre className="mt-1 p-2 bg-white rounded text-xs overflow-x-auto">
-                {htmlContent ? htmlContent.substring(0, 500) + (htmlContent.length > 500 ? '...' : '') : 'No HTML content'}
-              </pre>
-            </div>
-          </div>
-        </details>
-      )}
-
       {/* Render processed content parts with CSS isolation */}
       <div 
         className="email-content-isolated"
@@ -238,6 +281,32 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
         })}
       </div>
 
+      {/* Render quoted content if it exists - remove spacing */}
+      {emailContentParsed.hasQuotedContent && enableQuotedContentCollapsing && (
+        <div className="mt-1">
+          {useEnterpriseParser && enterpriseEmailContent ? (
+            <EnterpriseCollapsibleQuotedContent
+              quotedContent={emailContentParsed.quotedContent}
+              quotedHeaders={enterpriseEmailContent.quotedHeaders}
+              metadata={enterpriseEmailContent.metadata}
+            />
+          ) : (
+            <CollapsibleQuotedContent
+              quotedContent={emailContentParsed.quotedContent}
+              quotedHeaders={emailContentParsed.quotedHeaders}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Enterprise parsing indicator */}
+      {isParsingEnterprise && (
+        <div className="mt-2 text-xs text-blue-600 flex items-center gap-2">
+          <div className="animate-spin w-3 h-3 border border-blue-600 border-t-transparent rounded-full"></div>
+          Parsing with RFC standards...
+        </div>
+      )}
+
       {/* Development info */}
       {false && processedContent.cidCount > 0 && (
         <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -254,10 +323,38 @@ export const EmailContentWithAttachments: React.FC<EmailContentWithAttachmentsPr
 };
 
 // Enhanced HTML sanitization that prevents CSS bleeding and maintains security
+// 
+// ⚠️  CRITICAL THREADING SYSTEM PROTECTION ⚠️
+// This function MUST preserve RFC2822 threading headers to maintain email threading.
+// These headers are embedded as HTML comments and are ESSENTIAL for the threading system:
+// <!--[RFC2822-THREADING-HEADERS-START]-->
+// Message-ID: xxx
+// In-Reply-To: xxx  
+// References: xxx
+// Thread-Topic: xxx
+// Thread-Index: xxx
+// <!--[RFC2822-THREADING-HEADERS-END]-->
+//
+// The get_or_create_thread_id_universal function depends on these headers to group emails
+// into proper conversation threads. If these headers are lost during sanitization,
+// emails will appear as separate threads instead of being grouped together.
+//
+// DO NOT MODIFY this function without ensuring threading headers remain preserved!
 const sanitizeHtml = (html: string): string => {
   // Create a temporary div to parse HTML
   const tempDiv = document.createElement('div');
   tempDiv.innerHTML = html;
+
+  // CRITICAL: Preserve RFC2822 threading headers - these are essential for thread system
+  // These headers MUST be extracted BEFORE any HTML processing to prevent loss
+  // Pattern matches the exact format used by the backend threading system
+  const threadingHeadersRegex = /<!--\[RFC2822-THREADING-HEADERS-START\]-->.*?<!--\[RFC2822-THREADING-HEADERS-END\]-->/gs;
+  const threadingHeaders = html.match(threadingHeadersRegex) || [];
+  
+  // Log if threading headers are found for debugging purposes
+  if (threadingHeaders.length > 0) {
+    console.log('🧵 Threading headers found and preserved during sanitization:', threadingHeaders.length);
+  }
 
   // Remove dangerous elements but preserve formatting elements
   const dangerousElements = tempDiv.querySelectorAll('script, object, embed, iframe, form, input, button, link, meta');
@@ -343,7 +440,19 @@ const sanitizeHtml = (html: string): string => {
     });
   });
 
-  return tempDiv.innerHTML;
+  let sanitizedHtml = tempDiv.innerHTML;
+
+  // CRITICAL: Restore threading headers after sanitization
+  // These headers are essential for proper email threading and must be preserved
+  // They MUST be placed at the beginning of the content to ensure they're not lost
+  // and remain accessible to the get_or_create_thread_id_universal function
+  if (threadingHeaders.length > 0) {
+    // Add threading headers at the beginning to ensure they're not lost
+    sanitizedHtml = threadingHeaders.join('\n') + '\n' + sanitizedHtml;
+    console.log('✅ Threading headers successfully restored after sanitization');
+  }
+
+  return sanitizedHtml;
 };
 
 export default EmailContentWithAttachments; 

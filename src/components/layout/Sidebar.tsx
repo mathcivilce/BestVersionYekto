@@ -93,7 +93,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
           .from('emails')
           .select('*', { count: 'exact', head: true })
           .eq('store_id', store.id)
-          .eq('user_id', user.id)
           .eq('status', 'open');
 
         counts[store.id] = count || 0;
@@ -122,8 +121,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
         {
           event: '*',
           schema: 'public',
-          table: 'emails',
-          filter: `user_id=eq.${user.id}`
+          table: 'emails'
         },
         (payload) => {
           // Refresh counts when emails are added, updated, or deleted

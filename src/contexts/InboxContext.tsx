@@ -771,12 +771,16 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.log('=== STARTING AUTOMATIC SYNC SETUP (POLLING APPROACH) ===');
       console.log('Store created with ID:', newStore.id);
 
-      // Trigger initial email sync and webhook creation
+      // Trigger initial email sync using event-driven queue system
       const performInitialSync = async () => {
         try {
-          console.log('Performing initial email sync...');
-          await syncEmails(newStore.id, storeData.syncFrom, storeData.syncTo);
-          console.log('Initial sync completed successfully');
+          console.log('=== EVENT-DRIVEN SYNC: Creating sync job ===');
+          console.log('Store ID:', newStore.id);
+          console.log('Sync range:', { from: storeData.syncFrom, to: storeData.syncTo });
+          
+          // Create sync job in queue (triggers immediate webhook processing)
+          await createSyncJob(newStore.id, 'initial', storeData.syncFrom, storeData.syncTo);
+          console.log('✅ Sync job created - processing started immediately via webhook');
           
           // Create webhook subscription after successful sync
           console.log('Creating webhook subscription for server OAuth flow...');
@@ -1195,116 +1199,275 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   };
 
-  const syncEmails = async (storeId: string, syncFrom?: string, syncTo?: string) => {
+  // ============================================================================================================
+  // EVENT-DRIVEN SYNC QUEUE FUNCTIONS
+  // ============================================================================================================
+  
+  /**
+   * Create a sync job in the queue system (triggers immediate webhook processing)
+   * @param storeId - Store to sync
+   * @param syncType - Type of sync ('initial', 'manual', 'incremental')
+   * @param syncFrom - Optional start date
+   * @param syncTo - Optional end date
+   */
+  const createSyncJob = async (storeId: string, syncType: string = 'manual', syncFrom?: string, syncTo?: string) => {
     try {
-      console.log(`Starting email sync for store: ${storeId}`);
+      console.log(`📋 [QUEUE] Creating ${syncType} sync job for store: ${storeId}`);
       
       // Validate storeId parameter
       if (!storeId || storeId.trim() === '') {
-        const error = 'Invalid storeId parameter: ' + JSON.stringify(storeId);
-        console.error(error);
         throw new Error('Store ID is required and must be a valid string');
       }
       
+      // Get user session and business context
       const { data: { session } } = await supabase.auth.getSession();
-      console.log('Session check:', { hasSession: !!session, hasAccessToken: !!session?.access_token });
-      
-      if (!session?.access_token) {
+      if (!session?.access_token || !user) {
         throw new Error('No user session found. Please log in again.');
       }
 
-      console.log('Calling sync-emails function with payload:', { storeId: storeId, syncFrom, syncTo });
+      // Get user's business_id for security
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile?.business_id) {
+        throw new Error('Unable to load business information. Please contact support.');
+      }
+
+      // ================================================================================================
+      // PHASE 6: CHUNKED PROCESSING INTEGRATION
+      // ================================================================================================
       
-      // Create the request payload - include date range if provided
-      const requestPayload: any = { storeId: storeId };
+      // For initial syncs, use chunked processing for better performance and reliability
+      if (syncType === 'initial') {
+        console.log('🧩 [CHUNKED] Creating chunked sync job for large initial sync...');
+        
+        // Estimate email count based on sync range
+        let estimatedEmailCount = 1000; // Default for initial sync
+        if (syncFrom && syncTo) {
+          const fromDate = new Date(syncFrom);
+          const toDate = new Date(syncTo);
+          const daysDiff = Math.ceil((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
+          estimatedEmailCount = Math.max(100, Math.min(10000, daysDiff * 20)); // Estimate ~20 emails per day
+          console.log(`📊 [ESTIMATE] Estimated ${estimatedEmailCount} emails for ${daysDiff} days`);
+        }
+        
+        const metadata = {
+          created_from: 'frontend',
+          client_timestamp: new Date().toISOString(),
+          sync_type: syncType,
+          user_agent: navigator.userAgent,
+          sync_from: syncFrom,
+          sync_to: syncTo,
+          chunked_processing: true,
+          estimated_email_count: estimatedEmailCount
+        };
+
+        const { data: chunkResult, error: chunkError } = await supabase.rpc('create_chunked_sync_job', {
+          p_store_id: storeId,
+          p_sync_type: syncType,
+          p_estimated_email_count: estimatedEmailCount,
+          p_metadata: metadata
+        });
+
+        if (chunkError) {
+          console.error('❌ [CHUNKED] Failed to create chunked sync job:', chunkError);
+          throw new Error(`Failed to create chunked sync job: ${chunkError.message}`);
+        }
+
+        if (!chunkResult.success) {
+          throw new Error(chunkResult.message);
+        }
+
+        console.log('✅ [CHUNKED] Chunked sync job created successfully:', chunkResult);
+        console.log(`🧩 [CHUNKS] Created ${chunkResult.total_chunks} chunks for processing`);
+        
+        // Update store status to indicate sync in progress
+        const store = stores.find(s => s.id === storeId);
+        if (store) {
+          setStores(prev => prev.map(s => 
+            s.id === storeId 
+              ? { ...s, status: 'syncing' as const }
+              : s
+          ));
+          console.log('📊 [UI] Store status updated to "syncing"');
+        }
+
+        // Show enhanced user feedback for chunked processing
+        toast.success(
+          `Large sync started with ${chunkResult.total_chunks} chunks - you can close this tab and it will continue in the background!`,
+          { duration: 5000 }
+        );
+        
+        return {
+          id: chunkResult.parent_job_id,
+          sync_type: syncType,
+          status: 'pending',
+          total_chunks: chunkResult.total_chunks,
+          chunked: true,
+          estimated_emails: estimatedEmailCount
+        };
+      }
+
+      // ================================================================================================
+      // REGULAR SYNC PROCESSING (for manual/incremental syncs)
+      // ================================================================================================
+      
+      // Prepare sync job data for regular processing
+      const jobData: any = {
+        store_id: storeId,
+        user_id: user.id,
+        business_id: userProfile.business_id,
+        sync_type: syncType,
+        status: 'pending',
+        metadata: {
+          created_from: 'frontend',
+          client_timestamp: new Date().toISOString(),
+          sync_type: syncType,
+          user_agent: navigator.userAgent,
+          chunked_processing: false
+        }
+      };
       
       // Convert date ranges to Perth timezone with full day coverage
       if (syncFrom) {
-        // Create start of day in Perth timezone (UTC+8)
         const fromDate = new Date(syncFrom + 'T00:00:00+08:00');
-        requestPayload.syncFrom = fromDate.toISOString();
+        jobData.sync_from = fromDate.toISOString();
+        jobData.metadata.original_sync_from = syncFrom;
         console.log('Converted syncFrom:', syncFrom, '->', fromDate.toISOString());
       }
       
       if (syncTo) {
-        // Create end of day in Perth timezone (UTC+8)
         const toDate = new Date(syncTo + 'T23:59:59+08:00');
-        requestPayload.syncTo = toDate.toISOString();
+        jobData.sync_to = toDate.toISOString();
+        jobData.metadata.original_sync_to = syncTo;
         console.log('Converted syncTo:', syncTo, '->', toDate.toISOString());
       }
+
+      console.log('📨 [QUEUE] Regular job data:', jobData);
       
-      console.log('=== DETAILED REQUEST LOGGING ===');
-      console.log('storeId variable:', storeId);
-      console.log('storeId type:', typeof storeId);
-      console.log('storeId length:', storeId?.length);
-      console.log('Original syncFrom:', syncFrom);
-      console.log('Original syncTo:', syncTo);
-      console.log('Converted syncFrom ISO:', requestPayload.syncFrom);
-      console.log('Converted syncTo ISO:', requestPayload.syncTo);
-      console.log('Request payload object:', requestPayload);
-      console.log('Session access token (first 20 chars):', session.access_token.substring(0, 20) + '...');
-      console.log('=== END DETAILED REQUEST LOGGING ===');
-      
-      // Use direct fetch with proper JWT token
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const functionUrl = `${supabaseUrl}/functions/v1/sync-emails`;
-      
-      console.log('Making direct fetch call to sync-emails...');
-      const fetchResponse = await fetch(functionUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestPayload)
-      });
-      
-      console.log('Sync-emails response status:', fetchResponse.status);
-      console.log('Sync-emails response statusText:', fetchResponse.statusText);
-      
-      // Get response text before trying to parse as JSON
-      const responseText = await fetchResponse.text();
-      console.log('Sync-emails response text:', responseText);
-      
-      if (!fetchResponse.ok) {
-        console.error('Sync-emails error - Status:', fetchResponse.status);
-        console.error('Sync-emails error - Response:', responseText);
-        throw new Error(`HTTP ${fetchResponse.status}: ${responseText}`);
-      }
-      
-      // Try to parse as JSON
-      let response;
-      try {
-        response = JSON.parse(responseText);
-        console.log('Sync-emails response data (parsed):', response);
-      } catch (parseError) {
-        console.error('Failed to parse sync-emails response as JSON:', parseError);
-        console.error('Raw response text:', responseText);
-        throw new Error('Invalid JSON response from sync-emails function');
+      // Insert job into sync_queue (this triggers the webhook automatically)
+      const { data: job, error: jobError } = await supabase
+        .from('sync_queue')
+        .insert(jobData)
+        .select()
+        .single();
+
+      if (jobError) {
+        console.error('❌ [QUEUE] Failed to create sync job:', jobError);
+        throw new Error(`Failed to create sync job: ${jobError.message}`);
       }
 
-      if (response?.error) {
-        console.error('Edge function returned error:', response.error);
-        throw new Error(response.error);
+      console.log('✅ [QUEUE] Regular sync job created successfully:', job);
+      console.log('🚀 [WEBHOOK] Database trigger fired - processing started immediately');
+      
+      // Update store status to indicate sync in progress
+      const store = stores.find(s => s.id === storeId);
+      if (store) {
+        setStores(prev => prev.map(s => 
+          s.id === storeId 
+            ? { ...s, status: 'syncing' as const }
+            : s
+        ));
+        console.log('📊 [UI] Store status updated to "syncing"');
       }
 
-      console.log('Email sync completed:', response);
-      toast.success('Email sync completed successfully');
+      // Show user feedback
+      const feedbackMessage = syncType === 'manual' 
+        ? 'Email sync started in background'
+        : 'Email sync started - you can close this tab and it will continue in the background!';
+      toast.success(feedbackMessage);
       
-      // Refresh the emails after sync
+      return job;
+    } catch (error) {
+      console.error('❌ [QUEUE] Error creating sync job:', error);
+      const errorMessage = (error as any)?.message || 'Unknown error occurred';
+      toast.error(`Failed to start sync: ${errorMessage}`);
+      throw error;
+    }
+  };
+
+  /**
+   * Monitor sync job status for real-time updates
+   * @param storeId - Store to monitor
+   */
+  const monitorSyncStatus = async (storeId: string) => {
+    try {
+      // Subscribe to sync_queue changes for this store
+      const subscription = supabase
+        .channel(`sync_status_${storeId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'sync_queue',
+          filter: `store_id=eq.${storeId}`
+        }, (payload) => {
+          console.log('🔄 [REALTIME] Sync status update:', payload);
+          
+          const { new: newJob, old: oldJob } = payload;
+          
+          if (newJob) {
+            switch (newJob.status) {
+              case 'processing':
+                console.log('📊 [STATUS] Sync job started processing');
+                setStores(prev => prev.map(s => 
+                  s.id === storeId 
+                    ? { ...s, status: 'syncing' as const }
+                    : s
+                ));
+                break;
+                
+              case 'completed':
+                console.log('✅ [STATUS] Sync job completed successfully');
+                handleSyncCompletion(storeId, newJob);
+                break;
+                
+              case 'failed':
+                console.log('❌ [STATUS] Sync job failed');
+                handleSyncFailure(storeId, newJob);
+                break;
+            }
+          }
+        })
+        .subscribe();
+
+      return subscription;
+    } catch (error) {
+      console.error('Error setting up sync monitoring:', error);
+    }
+  };
+
+  /**
+   * Handle successful sync completion
+   */
+  const handleSyncCompletion = async (storeId: string, job: any) => {
+    try {
+      console.log('🎉 [COMPLETION] Processing sync completion for store:', storeId);
+      
+      // Update store status to connected and refresh last_synced
+      setStores(prev => prev.map(s => 
+        s.id === storeId 
+          ? { 
+              ...s, 
+              status: 'active' as const,
+              connected: true,
+              lastSynced: new Date().toISOString()
+            }
+          : s
+      ));
+      
+      // Refresh emails for this store
       if (user) {
-        console.log('Refreshing emails after sync...');
+        console.log('🔄 [REFRESH] Loading emails after sync completion...');
         const { data: emailsData, error: emailsError } = await supabase
           .from('emails')
           .select('*')
-          .eq('user_id', user.id)
           .eq('store_id', storeId)
           .order('date', { ascending: false });
 
-        if (emailsError) {
-          console.error('Error fetching emails after sync:', emailsError);
-        } else if (emailsData) {
-          console.log(`Found ${emailsData.length} emails for store ${storeId}`);
+        if (!emailsError && emailsData) {
           const store = stores.find(s => s.id === storeId);
           const emailsWithStore = emailsData.map(email => ({
             ...email,
@@ -1320,15 +1483,57 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             );
           });
           
-          console.log('Emails state updated successfully');
+          console.log(`📧 [EMAILS] Loaded ${emailsData.length} emails for store ${storeId}`);
         }
       }
+      
+      // Show success notification with sync stats
+      const metadata = job.metadata || {};
+      const emailCount = metadata.emails_processed || 0;
+      const attachmentCount = metadata.emails_with_attachments || 0;
+      
+      toast.success(`Email sync completed! Processed ${emailCount} emails${attachmentCount > 0 ? ` (${attachmentCount} with attachments)` : ''}`);
+      
     } catch (error) {
-      console.error('Error syncing emails:', error);
-      const errorMessage = (error as any)?.message || 'Unknown error occurred';
-      toast.error(`Failed to sync emails: ${errorMessage}`);
-      throw error;
+      console.error('Error handling sync completion:', error);
     }
+  };
+
+  /**
+   * Handle sync failure
+   */
+  const handleSyncFailure = async (storeId: string, job: any) => {
+    try {
+      console.log('💥 [FAILURE] Processing sync failure for store:', storeId);
+      
+      // Update store status  
+      setStores(prev => prev.map(s => 
+        s.id === storeId 
+          ? { ...s, status: 'issue' as const }
+          : s
+      ));
+      
+      // Show error notification
+      const errorMessage = job.error_message || 'Unknown error occurred';
+      const willRetry = job.attempts < (job.max_attempts || 3);
+      
+      if (willRetry) {
+        toast.error(`Sync failed but will retry automatically: ${errorMessage}`);
+      } else {
+        toast.error(`Sync failed permanently: ${errorMessage}. Please try again manually.`);
+      }
+      
+    } catch (error) {
+      console.error('Error handling sync failure:', error);
+    }
+  };
+
+  /**
+   * Legacy syncEmails function - now uses queue system
+   */
+  const syncEmails = async (storeId: string, syncFrom?: string, syncTo?: string) => {
+    console.log('📋 [LEGACY] syncEmails called - redirecting to queue system');
+    return createSyncJob(storeId, 'manual', syncFrom, syncTo);
   };
 
   const refreshEmails = async () => {
@@ -1575,8 +1780,48 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Set up realtime subscription with business-based filtering
       // Use unique channel name per business to prevent conflicts
       console.log('InboxContext: Setting up real-time subscription for business:', userProfile.business_id);
+      
+      // 📋 [NEW] Add handleSyncQueueUpdate function for real-time sync status
+      const handleSyncQueueUpdate = (payload: any) => {
+        const { new: newJob, old: oldJob, eventType } = payload;
+        
+        if (newJob && newJob.store_id) {
+          console.log(`🔄 [SYNC-STATUS] ${eventType}: Job ${newJob.id} for store ${newJob.store_id} - ${newJob.status}`);
+          
+          switch (newJob.status) {
+            case 'processing':
+              setStores(prev => prev.map(s => 
+                s.id === newJob.store_id 
+                  ? { ...s, status: 'syncing' as const }
+                  : s
+              ));
+              break;
+              
+            case 'completed':
+              handleSyncCompletion(newJob.store_id, newJob);
+              break;
+              
+            case 'failed':
+              handleSyncFailure(newJob.store_id, newJob);
+              break;
+          }
+        }
+      };
+      
       const subscription = supabase
       .channel(`inbox-emails-${userProfile.business_id}`)
+      
+      // 📋 [NEW] Subscribe to sync_queue changes first
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'sync_queue',
+          filter: `business_id=eq.${userProfile.business_id}`
+        },
+        handleSyncQueueUpdate
+      )
       .on(
         'postgres_changes',
         {

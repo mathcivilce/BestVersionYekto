@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 import ShopifyConnectModal from '../components/integrations/ShopifyConnectModal';
+import { useInbox } from '../contexts/InboxContext';
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -26,6 +27,8 @@ const Integrations: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [stores, setStores] = useState<ShopifyStore[]>([]);
+  const [disconnectingStores, setDisconnectingStores] = useState<Set<string>>(new Set());
+  const { stores: inboxStores, testRealtimeSubscription } = useInbox();
 
   const fetchStores = async () => {
     try {
@@ -92,6 +95,9 @@ const Integrations: React.FC = () => {
 
   const disconnectStore = async (storeId: string) => {
     try {
+      // Add store to disconnecting set
+      setDisconnectingStores(prev => new Set(prev).add(storeId));
+      
       const { error } = await supabase
         .from('stores')
         .update({ connected: false })
@@ -109,6 +115,13 @@ const Integrations: React.FC = () => {
     } catch (error) {
       console.error('Error disconnecting store:', error);
       toast.error('Failed to disconnect store');
+    } finally {
+      // Remove store from disconnecting set
+      setDisconnectingStores(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(storeId);
+        return newSet;
+      });
     }
   };
 
@@ -130,8 +143,24 @@ const Integrations: React.FC = () => {
   return (
     <>
       <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <h2 className="text-lg font-medium text-gray-900">Integrations</h2>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">Integrations</h1>
+          <div className="flex gap-3">
+                                      <button
+               onClick={() => setShowShopifyModal(true)}
+               className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+               + Connect Shopify Store
+             </button>
+             
+             {/* 🧪 Real-time Subscription Test Button */}
+             <button
+               onClick={testRealtimeSubscription}
+               className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+             >
+               🧪 Test Real-time
+             </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -237,10 +266,17 @@ const Integrations: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <button
                           onClick={() => disconnectStore(store.id)}
-                          disabled={!store.store.connected}
-                          className="text-red-600 hover:text-red-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={!store.store.connected || disconnectingStores.has(store.id)}
+                          className="inline-flex items-center text-red-600 hover:text-red-900 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          Disconnect
+                          {disconnectingStores.has(store.id) ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin mr-1" />
+                              Disconnecting...
+                            </>
+                          ) : (
+                            'Disconnect'
+                          )}
                         </button>
                       </td>
                     </tr>

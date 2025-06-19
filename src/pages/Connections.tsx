@@ -10,6 +10,7 @@ const Connections: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
+  const [disconnectingStores, setDisconnectingStores] = useState<Set<string>>(new Set());
   const { stores, disconnectStore, loading, error } = useInbox();
   
   // Filter for email-connected stores only
@@ -35,9 +36,19 @@ const Connections: React.FC = () => {
 
   const handleDisconnect = async (storeId: string) => {
     try {
+      // Add store to disconnecting set
+      setDisconnectingStores(prev => new Set(prev).add(storeId));
+      
       await disconnectStore(storeId);
     } catch (error) {
       console.error('Error disconnecting store:', error);
+    } finally {
+      // Remove store from disconnecting set
+      setDisconnectingStores(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(storeId);
+        return newSet;
+      });
     }
   };
   
@@ -75,18 +86,47 @@ const Connections: React.FC = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-lg font-medium text-gray-900">Email Integrations</h2>
-        {isAdmin && (
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
-          >
-            <Plus size={16} className="mr-2" />
-            Connect Email
-          </button>
-        )}
       </div>
 
+      {/* Microsoft Integration Card */}
+      {isAdmin && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-start">
+              <img 
+                src="/icons/microsoft-icon.png" 
+                alt="Microsoft icon"
+                className="w-12 h-12 rounded-lg"
+              />
+              <div className="ml-4 flex-1">
+                <h3 className="text-lg font-medium text-gray-900">
+                  Microsoft
+                </h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Connect your Microsoft Outlook account to manage emails in one place.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(true)}
+                className="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
+              >
+                <Mail size={16} className="mr-2" />
+                Connect
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Connected Email Accounts Table */}
       <div className="bg-white shadow-sm rounded-lg border border-gray-200">
+        <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
+          <h3 className="text-lg font-medium text-gray-900">Connected Email Accounts</h3>
+        </div>
         <div className="overflow-x-auto">
           {emailStores.length === 0 ? (
             <div className="text-center py-12">
@@ -171,9 +211,17 @@ const Connections: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <button
                           onClick={() => handleDisconnect(store.id)}
-                          className="text-red-600 hover:text-red-900"
+                          disabled={disconnectingStores.has(store.id)}
+                          className="inline-flex items-center text-red-600 hover:text-red-900 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          Disconnect
+                          {disconnectingStores.has(store.id) ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin mr-1" />
+                              Disconnecting...
+                            </>
+                          ) : (
+                            'Disconnect'
+                          )}
                         </button>
                       </td>
                     )}

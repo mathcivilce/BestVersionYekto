@@ -307,7 +307,7 @@ BEGIN
         GROUP BY business_id 
         HAVING COUNT(*) >= v_max_parallel
     )
-    ORDER BY c.priority ASC, c.created_at ASC
+    ORDER BY c.chunk_number ASC, c.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1;
     

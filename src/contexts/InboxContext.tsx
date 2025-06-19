@@ -1,10 +1,8 @@
 /**
  * Inbox Context Provider
- * 
- * This is the central context for managing email data and store connections throughout the application.
+ * * This is the central context for managing email data and store connections throughout the application.
  * It provides a comprehensive email management system with support for multiple email platforms.
- * 
- * Key Features:
+ * * Key Features:
  * - Multi-platform email integration (Outlook, Gmail)
  * - Real-time email synchronization
  * - Store connection management (MSAL popup and server-side OAuth)
@@ -12,19 +10,16 @@
  * - Token management and automatic refresh
  * - Real-time updates via Supabase subscriptions
  * - Error handling and recovery
- * 
- * Supported Authentication Methods:
+ * * Supported Authentication Methods:
  * 1. MSAL Popup (Microsoft): Client-side token management
  * 2. Server-side OAuth: Backend token management with refresh capability
- * 
- * Data Flow:
+ * * Data Flow:
  * 1. User connects email store (via MSAL or server OAuth)
  * 2. Store credentials saved to database
  * 3. Emails synced from email provider APIs
  * 4. Real-time updates via Supabase subscriptions
  * 5. Automatic token refresh for expired credentials
- * 
- * Context State:
+ * * Context State:
  * - emails: Array of email objects from all connected stores
  * - stores: Array of connected email store configurations
  * - loading: Global loading state for async operations
@@ -51,8 +46,7 @@ const supabase = createClient(
 
 /**
  * Email data structure
- * 
- * Represents a single email message with metadata for display and management.
+ * * Represents a single email message with metadata for display and management.
  * Includes both original email data and application-specific fields.
  */
 interface Email {
@@ -78,8 +72,7 @@ interface Email {
 
 /**
  * Email store configuration
- * 
- * Represents a connected email account (Outlook, Gmail, etc.)
+ * * Represents a connected email account (Outlook, Gmail, etc.)
  * with authentication and synchronization settings.
  */
 interface Store {
@@ -99,8 +92,7 @@ interface Store {
 
 /**
  * Inbox Context Interface
- * 
- * Defines all methods and state available to components using this context.
+ * * Defines all methods and state available to components using this context.
  * Provides a comprehensive API for email and store management.
  */
 interface InboxContextType {
@@ -122,7 +114,14 @@ interface InboxContextType {
   connectStore: (storeData: any) => Promise<void>;           // MSAL popup connection
   connectStoreServerOAuth: (storeData: any) => Promise<void>; // Server-side OAuth connection
   disconnectStore: (id: string) => Promise<void>;
-  syncEmails: (storeId: string, syncFrom?: string, syncTo?: string) => Promise<void>;
+  syncEmails: (storeId: string, syncFrom?: string, syncTo?: string) => Promise<any>;
+  
+  // Error recovery operations
+  refreshStoreStatus: (storeId: string) => Promise<void>;    // Manual store status refresh
+  retryFailedSync: (storeId: string) => Promise<void>;       // Retry failed sync
+  
+  // 🧪 TESTING: Real-time subscription test
+  testRealtimeSubscription: () => Promise<void>;             // Test real-time subscription functionality
 }
 
 // Create the inbox context
@@ -142,8 +141,7 @@ export const useInbox = () => {
 
 /**
  * Microsoft Graph API Scopes
- * 
- * Required permissions for accessing Outlook email data.
+ * * Required permissions for accessing Outlook email data.
  * These scopes are requested during the OAuth flow.
  */
 const requiredScopes = [
@@ -155,8 +153,7 @@ const requiredScopes = [
 
 /**
  * MSAL Configuration
- * 
- * Configuration for Microsoft Authentication Library (MSAL)
+ * * Configuration for Microsoft Authentication Library (MSAL)
  * used for Outlook integration via popup authentication.
  */
 const msalConfig: Configuration = {
@@ -197,11 +194,9 @@ let msalInstance: PublicClientApplication | null = null;
 
 /**
  * Initialize MSAL instance
- * 
- * Creates and initializes the MSAL instance for Microsoft authentication.
+ * * Creates and initializes the MSAL instance for Microsoft authentication.
  * Uses singleton pattern to ensure only one instance exists.
- * 
- * @returns Promise<PublicClientApplication> - Initialized MSAL instance
+ * * @returns Promise<PublicClientApplication> - Initialized MSAL instance
  */
 const initializeMsal = async () => {
   if (!msalInstance) {
@@ -218,8 +213,7 @@ const initializeMsal = async () => {
 
 /**
  * Inbox Provider Component
- * 
- * Provides inbox context to all child components and manages:
+ * * Provides inbox context to all child components and manages:
  * - Email data loading and synchronization
  * - Store connection and management
  * - Real-time updates via Supabase subscriptions
@@ -255,8 +249,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   /**
    * Get email by ID
-   * 
-   * @param id - Email identifier
+   * * @param id - Email identifier
    * @returns Email object or undefined if not found
    */
   const getEmailById = (id: string) => {
@@ -265,10 +258,8 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   /**
    * Mark email as read
-   * 
-   * Updates the email's read status in the database and local state.
-   * 
-   * @param id - Email identifier
+   * * Updates the email's read status in the database and local state.
+   * * @param id - Email identifier
    */
   const markAsRead = async (id: string) => {
     try {
@@ -292,10 +283,8 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   /**
    * Delete email
-   * 
-   * Removes the email from the database and local state.
-   * 
-   * @param id - Email identifier
+   * * Removes the email from the database and local state.
+   * * @param id - Email identifier
    */
   const deleteEmail = async (id: string) => {
     try {
@@ -317,12 +306,10 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   /**
    * Connect Store via MSAL Popup
-   * 
-   * Connects an Outlook email account using Microsoft's MSAL library
+   * * Connects an Outlook email account using Microsoft's MSAL library
    * with popup-based authentication. This method stores tokens client-side
    * and is suitable for personal use or development.
-   * 
-   * @param storeData - Store configuration data
+   * * @param storeData - Store configuration data
    */
   const connectStore = async (storeData: any) => {
     try {
@@ -778,11 +765,15 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           console.log('Store ID:', newStore.id);
           console.log('Sync range:', { from: storeData.syncFrom, to: storeData.syncTo });
           
-          // Create sync job in queue (triggers immediate webhook processing)
-          await createSyncJob(newStore.id, 'initial', storeData.syncFrom, storeData.syncTo);
-          console.log('✅ Sync job created - processing started immediately via webhook');
+          // Call the existing createSyncJob function instead of duplicating logic
+          const result = await createSyncJob(newStore.id, 'manual', storeData.syncFrom, storeData.syncTo);
           
-          // Create webhook subscription after successful sync
+          console.log('✅ [SYNC] Initial sync job created:', result);
+          
+          // =========================================================================
+          // == START: FIXED WEBHOOK CREATION LOGIC                                 ==
+          // =========================================================================
+          // This block is now identical to the old, working code.
           console.log('Creating webhook subscription for server OAuth flow...');
           console.log('Store ID for webhook:', newStore.id);
           try {
@@ -814,65 +805,11 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             console.error('❌ Webhook creation error (server OAuth):', webhookError);
             // Don't fail the entire process if webhook creation fails
           }
+          // =========================================================================
+          // == END: FIXED WEBHOOK CREATION LOGIC                                   ==
+          // =========================================================================
           
-          // NOW update to final connected store after sync completes
-          const storeWithLastSynced = {
-            ...newStore,
-            connected: true,
-            lastSynced: newStore.last_synced
-          };
-          
-          console.log('=== EMAIL SYNC COMPLETE - UPDATING TO CONNECTED STATUS ===');
-          console.log('Final connected store:', storeWithLastSynced);
-          
-          setStores(prev => {
-            if (isUpdatingExisting) {
-              // Update existing store in place
-              return prev.map(store => {
-                if (store.id === newStore.id) {
-                  return storeWithLastSynced;
-                } else if (store.id === tempStoreId) {
-                  // Remove temp store
-                  return null;
-                }
-                return store;
-              }).filter(Boolean) as Store[];
-            } else {
-              // Remove temp store and add new final connected store
-              const filtered = prev.filter(store => store.id !== tempStoreId);
-              const newStores = [...filtered, storeWithLastSynced];
-              console.log('Final stores array after sync:', newStores);
-              return newStores;
-            }
-          });
-          
-          const successMessage = isUpdatingExisting 
-            ? 'Email account reconnected and synced successfully!'
-            : 'Email account connected and synced successfully!';
-          toast.success(successMessage);
-          
-          // Update OAuth attempt status
-          oauthStateManager.updateOAuthAttempt(attemptId, 'completed', newStore.email);
-          
-          // 🔧 FIX ISSUE 1: Rebuild threads after reconnection
-          // After reconnection, all emails are "new" to the database and need to be
-          // processed chronologically to ensure proper threading
-          console.log('🧵 Rebuilding threads for reconnected store...');
-          try {
-            const { data: rebuildResult, error: rebuildError } = await supabase.rpc('rebuild_threads_for_store', {
-              p_store_id: newStore.id,
-              p_user_id: user?.id
-            });
-            
-            if (rebuildError) {
-              console.warn('Thread rebuild failed (non-critical):', rebuildError);
-            } else {
-              console.log('✅ Thread rebuild completed:', rebuildResult);
-            }
-          } catch (rebuildError) {
-            console.warn('Thread rebuild error (non-critical):', rebuildError);
-            // Don't fail the connection for threading issues
-          }
+          return result;
         } catch (syncError) {
           console.error('Initial sync failed:', syncError);
           const errorMessage = (syncError as any)?.message || 'Unknown error';
@@ -938,6 +875,15 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const store = stores.find(s => s.id === id);
       if (!store) return;
+
+      // FIX: Handle disconnection of temporary/connecting stores that haven't been saved to DB
+      if (id.startsWith('temp-')) {
+        console.log(`🔌 Disconnecting a temporary store: ${store.name}. Removing from UI state only.`);
+        console.log(`🔌 Store ID: ${id} - This is a temporary store, skipping all database operations.`);
+        setStores(prev => prev.filter(s => s.id !== id));
+        toast.success('Connection cancelled.');
+        return; // Explicitly return early to prevent any database operations
+      }
 
       console.log(`🔌 Starting enhanced disconnection for store: ${store.name} (${store.email})`);
 
@@ -1131,6 +1077,51 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Step 4: Always delete database records (even if webhook cleanup failed)
       console.log('🗑️ Cleaning up database records...');
       
+      // Clean up chunk processing queue entries first (to avoid foreign key constraints)
+      console.log('🧹 Cleaning up chunk processing queue entries...');
+      
+      // First, get chunk IDs for this store
+      const { data: chunkIds } = await supabase
+        .from('chunked_sync_jobs')
+        .select('id')
+        .eq('store_id', id);
+
+      if (chunkIds && chunkIds.length > 0) {
+        const { error: queueCleanupError } = await supabase
+          .from('chunk_processing_queue')
+          .delete()
+          .in('chunk_id', chunkIds.map(chunk => chunk.id));
+
+        if (queueCleanupError) {
+          console.warn('Could not delete chunk processing queue entries:', queueCleanupError);
+          // Continue anyway - we'll try the safer approach
+        }
+      }
+
+      // Clean up chunked sync jobs
+      console.log('🧹 Cleaning up chunked sync jobs...');
+      const { error: chunkedJobsError } = await supabase
+        .from('chunked_sync_jobs')
+        .delete()
+        .eq('store_id', id);
+
+      if (chunkedJobsError) {
+        console.warn('Could not delete chunked sync jobs:', chunkedJobsError);
+        // Continue anyway
+      }
+
+      // Clean up sync queue entries
+      console.log('🧹 Cleaning up sync queue entries...');
+      const { error: syncQueueError } = await supabase
+        .from('sync_queue')
+        .delete()
+        .eq('store_id', id);
+
+      if (syncQueueError) {
+        console.warn('Could not delete sync queue entries:', syncQueueError);
+        // Continue anyway
+      }
+      
       // Delete subscription record
       await supabase
         .from('graph_subscriptions')
@@ -1237,131 +1228,140 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       // ================================================================================================
-      // PHASE 6: CHUNKED PROCESSING INTEGRATION
+      // PHASE 6: ENTERPRISE WEBHOOK SYNC PROCESSING
       // ================================================================================================
       
-      // For initial syncs, use chunked processing for better performance and reliability
-      if (syncType === 'initial') {
-        console.log('🧩 [CHUNKED] Creating chunked sync job for large initial sync...');
-        
-        // Estimate email count based on sync range
-        let estimatedEmailCount = 1000; // Default for initial sync
-        if (syncFrom && syncTo) {
-          const fromDate = new Date(syncFrom);
-          const toDate = new Date(syncTo);
-          const daysDiff = Math.ceil((toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
-          estimatedEmailCount = Math.max(100, Math.min(10000, daysDiff * 20)); // Estimate ~20 emails per day
-          console.log(`📊 [ESTIMATE] Estimated ${estimatedEmailCount} emails for ${daysDiff} days`);
+      // For all sync types, use the proper webhook approach
+      console.log(`🔗 [WEBHOOK] Creating ${syncType} sync job via enterprise webhook...`);
+      
+      // Get ACCURATE email count instead of estimation
+      console.log(`📊 [COUNT] Getting accurate email count for sync range...`);
+      let actualEmailCount = 100; // Default fallback
+      
+      try {
+        // Get actual email count from Microsoft Graph for accurate chunking
+        const { data: storeData } = await supabase
+          .from('stores')
+          .select('access_token, email, platform')
+          .eq('id', storeId)
+          .single();
+
+        if (storeData?.access_token) {
+          let graphUrl = '';
+          
+          if (syncFrom && syncTo) {
+            // Build OData filter for date range
+            const fromIso = new Date(syncFrom).toISOString();
+            const toIso = new Date(syncTo).toISOString();
+            graphUrl = `https://graph.microsoft.com/v1.0/me/messages?$count=true&$filter=receivedDateTime ge ${fromIso} and receivedDateTime le ${toIso}&$top=1`;
+          } else {
+            // Get total message count
+            graphUrl = 'https://graph.microsoft.com/v1.0/me/messages?$count=true&$top=1';
+          }
+
+          const countResponse = await fetch(graphUrl, {
+            headers: {
+              'Authorization': `Bearer ${storeData.access_token}`,
+              'ConsistencyLevel': 'eventual'
+            }
+          });
+
+          if (countResponse.ok) {
+            const countData = await countResponse.json();
+            actualEmailCount = parseInt(countData['@odata.count']) || 100;
+            console.log(`📊 [COUNT] Accurate count: ${actualEmailCount} emails`);
+          } else {
+            console.warn('📊 [COUNT] Could not get accurate count, using default');
+          }
         }
-        
-        const metadata = {
-          created_from: 'frontend',
-          client_timestamp: new Date().toISOString(),
-          sync_type: syncType,
-          user_agent: navigator.userAgent,
-          sync_from: syncFrom,
-          sync_to: syncTo,
-          chunked_processing: true,
-          estimated_email_count: estimatedEmailCount
-        };
+      } catch (countError) {
+        console.warn('📊 [COUNT] Error getting email count:', countError);
+      }
+      
+      const metadata = {
+        created_from: 'frontend',
+        client_timestamp: new Date().toISOString(),
+        sync_type: syncType,
+        user_agent: navigator.userAgent,
+        sync_from: syncFrom,
+        sync_to: syncTo,
+        actual_email_count: actualEmailCount
+      };
 
-        const { data: chunkResult, error: chunkError } = await supabase.rpc('create_chunked_sync_job', {
-          p_store_id: storeId,
-          p_sync_type: syncType,
-          p_estimated_email_count: estimatedEmailCount,
-          p_metadata: metadata
-        });
-
-        if (chunkError) {
-          console.error('❌ [CHUNKED] Failed to create chunked sync job:', chunkError);
-          throw new Error(`Failed to create chunked sync job: ${chunkError.message}`);
-        }
-
-        if (!chunkResult.success) {
-          throw new Error(chunkResult.message);
-        }
-
-        console.log('✅ [CHUNKED] Chunked sync job created successfully:', chunkResult);
-        console.log(`🧩 [CHUNKS] Created ${chunkResult.total_chunks} chunks for processing`);
-        
-        // Update store status to indicate sync in progress
-        const store = stores.find(s => s.id === storeId);
-        if (store) {
-          setStores(prev => prev.map(s => 
-            s.id === storeId 
-              ? { ...s, status: 'syncing' as const }
-              : s
-          ));
-          console.log('📊 [UI] Store status updated to "syncing"');
-        }
-
-        // Show enhanced user feedback for chunked processing
-        toast.success(
-          `Large sync started with ${chunkResult.total_chunks} chunks - you can close this tab and it will continue in the background!`,
-          { duration: 5000 }
-        );
-        
-        return {
-          id: chunkResult.parent_job_id,
+      // STEP 1: Create parent sync job in sync_queue first
+      console.log(`📋 [PARENT] Creating parent sync job...`);
+      const { data: parentJob, error: parentError } = await supabase
+        .from('sync_queue')
+        .insert({
+          business_id: userProfile.business_id,
+          store_id: storeId,
           sync_type: syncType,
           status: 'pending',
-          total_chunks: chunkResult.total_chunks,
-          chunked: true,
-          estimated_emails: estimatedEmailCount
-        };
-      }
-
-      // ================================================================================================
-      // REGULAR SYNC PROCESSING (for manual/incremental syncs)
-      // ================================================================================================
-      
-      // Prepare sync job data for regular processing
-      const jobData: any = {
-        store_id: storeId,
-        user_id: user.id,
-        business_id: userProfile.business_id,
-        sync_type: syncType,
-        status: 'pending',
-        metadata: {
-          created_from: 'frontend',
-          client_timestamp: new Date().toISOString(),
-          sync_type: syncType,
-          user_agent: navigator.userAgent,
-          chunked_processing: false
-        }
-      };
-      
-      // Convert date ranges to Perth timezone with full day coverage
-      if (syncFrom) {
-        const fromDate = new Date(syncFrom + 'T00:00:00+08:00');
-        jobData.sync_from = fromDate.toISOString();
-        jobData.metadata.original_sync_from = syncFrom;
-        console.log('Converted syncFrom:', syncFrom, '->', fromDate.toISOString());
-      }
-      
-      if (syncTo) {
-        const toDate = new Date(syncTo + 'T23:59:59+08:00');
-        jobData.sync_to = toDate.toISOString();
-        jobData.metadata.original_sync_to = syncTo;
-        console.log('Converted syncTo:', syncTo, '->', toDate.toISOString());
-      }
-
-      console.log('📨 [QUEUE] Regular job data:', jobData);
-      
-      // Insert job into sync_queue (this triggers the webhook automatically)
-      const { data: job, error: jobError } = await supabase
-        .from('sync_queue')
-        .insert(jobData)
+          priority: 1,
+          sync_from: syncFrom,
+          sync_to: syncTo,
+          metadata: metadata
+        })
         .select()
         .single();
 
-      if (jobError) {
-        console.error('❌ [QUEUE] Failed to create sync job:', jobError);
-        throw new Error(`Failed to create sync job: ${jobError.message}`);
+      if (parentError || !parentJob) {
+        console.error('❌ [PARENT] Failed to create parent sync job:', parentError);
+        throw new Error(`Failed to create parent sync job: ${parentError?.message}`);
       }
 
-      console.log('✅ [QUEUE] Regular sync job created successfully:', job);
-      console.log('🚀 [WEBHOOK] Database trigger fired - processing started immediately');
+      console.log(`✅ [PARENT] Parent sync job created with ID: ${parentJob.id}`);
+
+      // STEP 2: Create sync chunks with correct parent job ID
+      const { data: chunkResult, error: chunkError } = await supabase.rpc('create_sync_chunks', {
+        p_parent_sync_job_id: parentJob.id,
+        p_sync_type: syncType,
+        p_estimated_email_count: actualEmailCount,
+        p_sync_from: syncFrom,
+        p_sync_to: syncTo
+      });
+
+      if (chunkError) {
+        console.error('❌ [CHUNKS] Failed to create sync chunks:', chunkError);
+        throw new Error(`Failed to create sync job: ${chunkError.message}`);
+      }
+
+      if (!chunkResult?.success) {
+        throw new Error(chunkResult?.message || 'Sync chunk creation failed');
+      }
+
+      console.log('✅ [CHUNKS] Sync chunks created successfully:', chunkResult);
+      console.log(`🧩 [CHUNKS] Created ${chunkResult.total_chunks} chunks for processing`);
+      console.log(`📋 [QUEUE] Sync job ID: ${chunkResult.parent_job_id}`);
+      
+      // Immediately trigger the UNIFIED background processor for event-driven processing
+      console.log('🚀 [EVENT-DRIVEN] Triggering background processor immediately...');
+      try {
+        const { data: processorResult, error: processorError } = await supabase.functions.invoke('unified-background-sync', {
+          body: {
+            trigger_source: 'frontend_immediate',
+            job_id: parentJob.id,
+            parent_sync_job_id: parentJob.id,
+            store_id: storeId,
+            business_id: userProfile.business_id,
+            sync_type: syncType,
+            immediate_processing: true
+          },
+          headers: {
+            Authorization: `Bearer ${session?.access_token}`
+          }
+        });
+
+        if (processorError) {
+          console.warn('⚠️ [PROCESSOR] Background processor trigger failed (will retry):', processorError);
+          // Don't throw error - the job is still created and can be processed later
+        } else {
+          console.log('✅ [PROCESSOR] Background processor triggered successfully:', processorResult);
+        }
+      } catch (triggerError) {
+        console.warn('⚠️ [PROCESSOR] Failed to trigger background processor:', triggerError);
+        // Don't throw error - the sync job is created and will be processed eventually
+      }
       
       // Update store status to indicate sync in progress
       const store = stores.find(s => s.id === storeId);
@@ -1374,13 +1374,34 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.log('📊 [UI] Store status updated to "syncing"');
       }
 
-      // Show user feedback
-      const feedbackMessage = syncType === 'manual' 
-        ? 'Email sync started in background'
-        : 'Email sync started - you can close this tab and it will continue in the background!';
-      toast.success(feedbackMessage);
+      // Show enhanced user feedback for chunked processing
+      const chunkText = chunkResult.total_chunks > 1 ? ` with ${chunkResult.total_chunks} chunks` : '';
+      toast.success(
+        `Sync started${chunkText} - will be processed in the background!`,
+        { duration: 5000 }
+      );
+
+      // 🔄 FALLBACK POLLING: Start polling as backup for real-time subscription
+      console.log('🔍 [POLLING] Starting fallback polling mechanism...');
+      pollSyncStatus(parentJob.id, storeId);
+
+      // ⏰ TIMEOUT DETECTION: Start timeout monitoring
+      console.log('⏰ [TIMEOUT] Starting sync timeout monitoring...');
+      startSyncTimeoutMonitoring(parentJob.id, storeId);
       
-      return job;
+      return {
+        id: parentJob.id,
+        sync_type: syncType,
+        status: 'pending',
+        total_chunks: chunkResult.total_chunks,
+        chunked: chunkResult.total_chunks > 1,
+        actual_emails: actualEmailCount,
+        architecture: 'chunked_processing',
+        processor_triggered: true // Background processor will pick up the chunks
+      };
+
+      // All sync types now use the unified webhook approach above
+      // This code path should not be reached anymore
     } catch (error) {
       console.error('❌ [QUEUE] Error creating sync job:', error);
       const errorMessage = (error as any)?.message || 'Unknown error occurred';
@@ -1408,7 +1429,7 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           
           const { new: newJob, old: oldJob } = payload;
           
-          if (newJob) {
+          if (newJob && typeof newJob === 'object' && 'status' in newJob) {
             switch (newJob.status) {
               case 'processing':
                 console.log('📊 [STATUS] Sync job started processing');
@@ -1445,18 +1466,120 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleSyncCompletion = async (storeId: string, job: any) => {
     try {
       console.log('🎉 [COMPLETION] Processing sync completion for store:', storeId);
+      console.log('🎉 [COMPLETION] Job details:', {
+        id: job.id,
+        status: job.status,
+        storeId: job.store_id,
+        businessId: job.business_id,
+        metadata: job.metadata
+      });
+      console.log('🔍 [POLLING] Sync completion detected - polling will be cancelled by timeout');
+      
+      // 🔍 [DEBUG] Check current store status before update (with fallback for OAuth scenarios)
+      let currentStore = stores.find(s => s.id === storeId);
+      
+      // If store not found in React state, try to fetch from database (OAuth scenario)
+      if (!currentStore && user) {
+        console.log('🏪 [STORE-FETCH] Store not in React state, fetching from database...');
+        try {
+          const { data: userProfile } = await supabase
+            .from('user_profiles')
+            .select('business_id')
+            .eq('user_id', user.id)
+            .single();
+
+          if (userProfile?.business_id) {
+            const { data: dbStore } = await supabase
+              .from('stores')
+              .select('*')
+              .eq('id', storeId)
+              .eq('business_id', userProfile.business_id)
+              .single();
+
+            if (dbStore) {
+              currentStore = {
+                id: dbStore.id,
+                name: dbStore.name,
+                platform: dbStore.platform,
+                email: dbStore.email,
+                connected: dbStore.connected,
+                status: dbStore.status,
+                color: dbStore.color,
+                lastSynced: dbStore.last_synced
+              };
+              console.log('🏪 [STORE-FETCH] Successfully fetched store from database');
+            }
+          }
+        } catch (fetchError) {
+          console.warn('🏪 [STORE-FETCH] Failed to fetch store from database:', fetchError);
+        }
+      }
+      
+      console.log('🏪 [STORE-BEFORE] Current store status:', {
+        id: currentStore?.id || 'NOT_FOUND',
+        name: currentStore?.name || 'NOT_FOUND',
+        status: currentStore?.status || 'NOT_FOUND',
+        connected: currentStore?.connected || 'NOT_FOUND'
+      });
       
       // Update store status to connected and refresh last_synced
-      setStores(prev => prev.map(s => 
-        s.id === storeId 
-          ? { 
-              ...s, 
-              status: 'active' as const,
-              connected: true,
-              lastSynced: new Date().toISOString()
-            }
-          : s
-      ));
+      console.log('🔄 [STORE-UPDATE] Updating store status to "active" and connected: true...');
+      setStores(prev => {
+        // First, check if this is an OAuth completion scenario where we need to remove temp stores
+        const tempStores = prev.filter(s => s.id.startsWith('temp-') && s.status === 'connecting');
+        const realStore = prev.find(s => s.id === storeId);
+        
+        console.log('🏪 [CLEANUP] Store cleanup analysis:', {
+          tempStoreCount: tempStores.length,
+          tempStoreIds: tempStores.map(s => s.id),
+          realStoreExists: !!realStore,
+          targetStoreId: storeId
+        });
+        
+        let updated = prev;
+        
+        // If we have temp stores and this is a real store completion, remove all temp stores
+        if (tempStores.length > 0 && (realStore || currentStore)) {
+          console.log('🗑️ [CLEANUP] Removing temporary connecting stores...');
+          updated = prev.filter(s => !s.id.startsWith('temp-'));
+        }
+        
+        // Update the real store or add it if it doesn't exist
+        updated = updated.map(s => 
+          s.id === storeId 
+            ? { 
+                ...s, 
+                status: 'active' as const,
+                connected: true,
+                lastSynced: new Date().toISOString()
+              }
+            : s
+        );
+        
+        // If store wasn't in the state, add it (OAuth completion scenario)
+        const storeExists = updated.find(s => s.id === storeId);
+        if (!storeExists && currentStore) {
+          console.log('🏪 [STORE-ADD] Adding store to React state (OAuth completion)');
+          updated.push({
+            ...currentStore,
+            status: 'active' as const,
+            connected: true,
+            lastSynced: new Date().toISOString()
+          });
+        }
+        
+        const updatedStore = updated.find(s => s.id === storeId);
+        console.log('🏪 [STORE-AFTER] Updated store status:', {
+          id: updatedStore?.id || 'STILL_NOT_FOUND',
+          name: updatedStore?.name || 'STILL_NOT_FOUND',
+          status: updatedStore?.status || 'STILL_NOT_FOUND',
+          connected: updatedStore?.connected || 'STILL_NOT_FOUND',
+          lastSynced: updatedStore?.lastSynced || 'STILL_NOT_FOUND',
+          tempStoresRemoved: tempStores.length
+        });
+        
+        return updated;
+      });
       
       // Refresh emails for this store
       if (user) {
@@ -1468,11 +1591,12 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           .order('date', { ascending: false });
 
         if (!emailsError && emailsData) {
-          const store = stores.find(s => s.id === storeId);
+          // Use currentStore or fallback to find the store again
+          let storeForEmails = currentStore || stores.find(s => s.id === storeId);
           const emailsWithStore = emailsData.map(email => ({
             ...email,
-            storeName: store?.name || '',
-            storeColor: store?.color || '#2563eb'
+            storeName: storeForEmails?.name || 'Unknown Store',
+            storeColor: storeForEmails?.color || '#2563eb'
           }));
           
           // Update emails state by merging new emails
@@ -1484,19 +1608,148 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           });
           
           console.log(`📧 [EMAILS] Loaded ${emailsData.length} emails for store ${storeId}`);
+        } else {
+          console.error('❌ [EMAILS] Error loading emails:', emailsError);
         }
       }
       
-      // Show success notification with sync stats
+      // Show comprehensive success notification with detailed sync stats
       const metadata = job.metadata || {};
       const emailCount = metadata.emails_processed || 0;
       const attachmentCount = metadata.emails_with_attachments || 0;
+      const threadingSuccessRate = metadata.universal_threading_success_rate || 'N/A';
+      const phase = metadata.phase || 'Unknown';
+      const performance = metadata.performance || 'N/A';
+      const duration = metadata.total_duration_ms || 0;
       
-      toast.success(`Email sync completed! Processed ${emailCount} emails${attachmentCount > 0 ? ` (${attachmentCount} with attachments)` : ''}`);
+      // Log comprehensive sync completion stats (similar to old sync-emails function)
+      console.log('=== 🎉 SYNC COMPLETED SUCCESSFULLY (ALL CHUNKS) ===');
+      console.log(`📧 Total emails processed: ${emailCount}`);
+      console.log(`📎 Emails with attachments: ${attachmentCount}`);
+      console.log(`🧵 Universal threading success rate: ${threadingSuccessRate}`);
+      console.log(`🚀 Sync strategy: ${phase}`);
+      console.log(`⚡ Performance improvement: ${performance}`);
+      console.log(`🧩 Chunk processing: All chunks completed successfully`);
+      console.log(`🔄 Store status: Updated to "Connected"`);
+      console.log(`⏱️  Total sync duration: ${duration}ms`);
+      console.log('=== END SYNC COMPLETION STATISTICS ===');
+      
+      // 🔗 WEBHOOK VERIFICATION: Ensure webhook subscription exists after successful sync
+      console.log('🔗 [WEBHOOK-VERIFY] Verifying webhook subscription after sync completion...');
+      try {
+        const webhookResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fix-missing-webhooks`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (webhookResponse.ok) {
+          const webhookResult = await webhookResponse.json();
+          const storeWebhooks = webhookResult.results?.filter((r: any) => r.storeId === storeId);
+          if (storeWebhooks && storeWebhooks.length > 0) {
+            console.log(`✅ [WEBHOOK-VERIFY] Created missing webhook subscription for store: ${storeId}`);
+          } else {
+            console.log('ℹ️ [WEBHOOK-VERIFY] Webhook subscription already exists (no action needed)');
+          }
+        } else {
+          console.warn('⚠️ [WEBHOOK-VERIFY] Webhook verification failed (non-critical):', webhookResponse.status);
+        }
+      } catch (webhookError) {
+        console.warn('⚠️ [WEBHOOK-VERIFY] Webhook verification error (non-critical):', webhookError);
+      }
+
+      // 🍞 SIMPLIFIED SUCCESS TOAST: Show only at the very end, once per sync
+      const storeForToast = currentStore || stores.find(s => s.id === storeId);
+      const storeName = storeForToast?.name || 'Email store';
+      
+      console.log('🍞 [TOAST] Showing simple success notification...');
+      toast.success(
+        `📧 ${storeName} connected successfully!`,
+        { duration: 4000 }
+      );
+      
+      console.log('✅ [COMPLETION] handleSyncCompletion finished successfully');
       
     } catch (error) {
-      console.error('Error handling sync completion:', error);
+      console.error('❌ [COMPLETION] Error handling sync completion:', error);
     }
+  };
+
+  /**
+   * Fallback polling mechanism for sync status
+   * Used as backup when real-time subscriptions fail
+   */
+  const pollSyncStatus = async (jobId: string, storeId: string) => {
+    const maxPolls = 60; // 5 minutes max (60 polls * 5 seconds)
+    let polls = 0;
+    let pollingActive = true;
+    
+    console.log(`🔍 [POLLING] Starting fallback polling for job ${jobId}, store ${storeId}`);
+    
+    const poll = async () => {
+      if (!pollingActive) {
+        console.log('🔍 [POLLING] Polling cancelled - real-time update received');
+        return;
+      }
+      
+      polls++;
+      console.log(`🔍 [POLLING] Checking sync status (${polls}/${maxPolls}) for job ${jobId}`);
+      
+      try {
+        const { data: job, error } = await supabase
+          .from('sync_queue')
+          .select('status, metadata, error_message')
+          .eq('id', jobId)
+          .single();
+        
+        if (error) {
+          console.error('🔍 [POLLING] Error fetching job status:', error);
+          return;
+        }
+        
+        if (job?.status === 'completed') {
+          console.log('✅ [POLLING] Sync completed via polling - triggering completion handler');
+          pollingActive = false;
+          handleSyncCompletion(storeId, job);
+          return;
+        } else if (job?.status === 'failed') {
+          console.log('❌ [POLLING] Sync failed via polling - triggering failure handler');
+          pollingActive = false;
+          handleSyncFailure(storeId, job);
+          return;
+        } else if (job?.status === 'processing') {
+          console.log('🔄 [POLLING] Sync still processing...');
+        } else {
+          console.log(`🔍 [POLLING] Current status: ${job?.status}`);
+        }
+        
+        // Continue polling if not completed and under limit
+        if (polls < maxPolls) {
+          setTimeout(poll, 5000); // Poll every 5 seconds
+        } else {
+          console.warn('⏰ [POLLING] Polling timeout reached - sync may still be running in background');
+          pollingActive = false;
+        }
+        
+      } catch (pollError) {
+        console.error('🔍 [POLLING] Error during polling:', pollError);
+        pollingActive = false;
+      }
+    };
+    
+    // Start polling after 10 seconds (give real-time subscription a chance first)
+    setTimeout(() => {
+      if (pollingActive) {
+        poll();
+      }
+    }, 10000);
+    
+    // Store polling cancellation function for cleanup
+    return () => {
+      pollingActive = false;
+    };
   };
 
   /**
@@ -1534,6 +1787,196 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const syncEmails = async (storeId: string, syncFrom?: string, syncTo?: string) => {
     console.log('📋 [LEGACY] syncEmails called - redirecting to queue system');
     return createSyncJob(storeId, 'manual', syncFrom, syncTo);
+  };
+
+  /**
+   * Manual store status refresh
+   * Checks database for actual store status and sync job status
+   */
+  const refreshStoreStatus = async (storeId: string) => {
+    try {
+      console.log(`🔄 [MANUAL-REFRESH] Refreshing status for store: ${storeId}`);
+      
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Get user's business_id
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile?.business_id) {
+        throw new Error('Unable to load business information');
+      }
+
+      // Get current store status from database
+      const { data: storeData, error: storeError } = await supabase
+        .from('stores')
+        .select('id, name, status, connected, last_synced')
+        .eq('id', storeId)
+        .eq('business_id', userProfile.business_id)
+        .single();
+
+      if (storeError) {
+        throw new Error(`Store not found: ${storeError.message}`);
+      }
+
+      // Check for any pending or running sync jobs
+      const { data: activeSyncJobs, error: syncError } = await supabase
+        .from('sync_queue')
+        .select('id, status, created_at, metadata')
+        .eq('store_id', storeId)
+        .eq('business_id', userProfile.business_id)
+        .in('status', ['pending', 'processing'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (syncError) {
+        console.warn('Error checking sync jobs:', syncError);
+      }
+
+      // Determine actual status
+      let actualStatus: Store['status'] = 'active';
+      
+      if (activeSyncJobs && activeSyncJobs.length > 0) {
+        const activeJob = activeSyncJobs[0];
+        const jobAge = Date.now() - new Date(activeJob.created_at).getTime();
+        const maxJobAge = 10 * 60 * 1000; // 10 minutes
+        
+        if (jobAge > maxJobAge) {
+          console.warn(`🔄 [MANUAL-REFRESH] Sync job ${activeJob.id} appears stuck (${Math.round(jobAge / 60000)} minutes old)`);
+          actualStatus = 'issue';
+        } else {
+          actualStatus = activeJob.status === 'processing' ? 'syncing' : 'connecting';
+        }
+      } else if (!storeData.connected) {
+        actualStatus = 'pending';
+      }
+
+      // Update frontend state
+      setStores(prev => prev.map(s => 
+        s.id === storeId 
+          ? { 
+              ...s, 
+              status: actualStatus,
+              connected: storeData.connected,
+              lastSynced: storeData.last_synced
+            }
+          : s
+      ));
+
+      console.log(`✅ [MANUAL-REFRESH] Store ${storeId} status refreshed: ${actualStatus}`);
+      toast.success(`Store status refreshed: ${actualStatus}`);
+
+    } catch (error) {
+      console.error('Error refreshing store status:', error);
+      toast.error(`Failed to refresh store status: ${(error as any)?.message}`);
+    }
+  };
+
+  /**
+   * Sync timeout monitoring
+   * Automatically detects and handles stuck sync jobs
+   */
+  const startSyncTimeoutMonitoring = (jobId: string, storeId: string) => {
+    const maxSyncTime = 15 * 60 * 1000; // 15 minutes maximum
+    const checkInterval = 2 * 60 * 1000; // Check every 2 minutes
+    let monitoringActive = true;
+    let checksPerformed = 0;
+    const maxChecks = Math.ceil(maxSyncTime / checkInterval);
+    
+    console.log(`⏰ [TIMEOUT] Starting timeout monitoring for job ${jobId} (max ${maxSyncTime / 60000} minutes)`);
+    
+    const checkTimeout = async () => {
+      if (!monitoringActive) {
+        console.log('⏰ [TIMEOUT] Monitoring cancelled - sync completed');
+        return;
+      }
+      
+      checksPerformed++;
+      console.log(`⏰ [TIMEOUT] Timeout check ${checksPerformed}/${maxChecks} for job ${jobId}`);
+      
+      try {
+        const { data: job, error } = await supabase
+          .from('sync_queue')
+          .select('status, created_at, metadata')
+          .eq('id', jobId)
+          .single();
+        
+        if (error) {
+          console.error('⏰ [TIMEOUT] Error checking job status:', error);
+          monitoringActive = false;
+          return;
+        }
+        
+        // If job is completed or failed, stop monitoring
+        if (job?.status === 'completed' || job?.status === 'failed') {
+          console.log(`⏰ [TIMEOUT] Job ${jobId} finished with status: ${job.status}`);
+          monitoringActive = false;
+          return;
+        }
+        
+        // Check if job has exceeded maximum time
+        const jobAge = Date.now() - new Date(job.created_at).getTime();
+        if (jobAge > maxSyncTime) {
+          console.warn(`⏰ [TIMEOUT] Sync job ${jobId} exceeded maximum time (${Math.round(jobAge / 60000)} minutes)`);
+          
+          // Update store status to issue
+          setStores(prev => prev.map(s => 
+            s.id === storeId 
+              ? { ...s, status: 'issue' as const }
+              : s
+          ));
+          
+          // Show timeout notification
+          toast.error(
+            `Sync appears to be stuck (${Math.round(jobAge / 60000)} minutes). Try refreshing store status or retry sync.`,
+            { 
+              duration: 10000
+            }
+          );
+          
+          monitoringActive = false;
+          return;
+        }
+        
+        // Continue monitoring if under time limit and checks remaining
+        if (checksPerformed < maxChecks) {
+          setTimeout(checkTimeout, checkInterval);
+        } else {
+          console.log(`⏰ [TIMEOUT] Maximum checks reached for job ${jobId}`);
+          monitoringActive = false;
+        }
+        
+      } catch (timeoutError) {
+        console.error('⏰ [TIMEOUT] Error during timeout monitoring:', timeoutError);
+        monitoringActive = false;
+      }
+    };
+    
+    // Start first check after initial delay
+    setTimeout(checkTimeout, checkInterval);
+    
+    // Return cancellation function
+    return () => {
+      monitoringActive = false;
+    };
+  };
+
+  /**
+   * Retry failed sync
+   * Creates a new sync job for stores with failed status
+   */
+  const retryFailedSync = async (storeId: string) => {
+    try {
+      await syncEmails(storeId);
+    } catch (error) {
+      console.error('Retry failed sync error:', error);
+      toast.error('Failed to retry sync. Please try again.');
+    }
   };
 
   const refreshEmails = async () => {
@@ -1783,35 +2226,77 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       
       // 📋 [NEW] Add handleSyncQueueUpdate function for real-time sync status
       const handleSyncQueueUpdate = (payload: any) => {
+        console.log('🔄 [SYNC-QUEUE-UPDATE] Raw payload received:', JSON.stringify(payload, null, 2));
+        
         const { new: newJob, old: oldJob, eventType } = payload;
         
-        if (newJob && newJob.store_id) {
-          console.log(`🔄 [SYNC-STATUS] ${eventType}: Job ${newJob.id} for store ${newJob.store_id} - ${newJob.status}`);
+        console.log('🔄 [SYNC-QUEUE-UPDATE] Parsed data:', {
+          eventType,
+          newStatus: newJob && typeof newJob === 'object' && 'status' in newJob ? newJob.status : 'unknown',
+          oldStatus: oldJob && typeof oldJob === 'object' && 'status' in oldJob ? oldJob.status : 'unknown',
+          jobId: newJob && typeof newJob === 'object' && 'id' in newJob ? newJob.id : 'unknown',
+          storeId: newJob && typeof newJob === 'object' && 'store_id' in newJob ? newJob.store_id : 'unknown',
+          businessId: newJob && typeof newJob === 'object' && 'business_id' in newJob ? newJob.business_id : 'unknown',
+          filterBusinessId: userProfile.business_id
+        });
+
+        // 🔍 [DEBUG] Check if business_id matches our filter
+        const newJobBusinessId = newJob && typeof newJob === 'object' && 'business_id' in newJob ? newJob.business_id : null;
+        if (newJobBusinessId !== userProfile.business_id) {
+          console.warn('⚠️ [FILTER-MISMATCH] Received sync_queue update for different business_id:', {
+            received: newJobBusinessId,
+            expected: userProfile.business_id,
+            willIgnore: true
+          });
+          return;
+        }
+        
+        const newJobStoreId = newJob && typeof newJob === 'object' && 'store_id' in newJob ? newJob.store_id : null;
+        const newJobId = newJob && typeof newJob === 'object' && 'id' in newJob ? newJob.id : null;
+        const newJobStatus = newJob && typeof newJob === 'object' && 'status' in newJob ? newJob.status : null;
+        
+        if (newJob && newJobStoreId) {
+          console.log(`🔄 [SYNC-STATUS] ${eventType}: Job ${newJobId} for store ${newJobStoreId} - ${newJobStatus}`);
           
-          switch (newJob.status) {
+          switch (newJobStatus) {
             case 'processing':
+              console.log('📋 [STATUS-UPDATE] Setting store to syncing');
               setStores(prev => prev.map(s => 
-                s.id === newJob.store_id 
+                s.id === newJobStoreId 
                   ? { ...s, status: 'syncing' as const }
                   : s
               ));
               break;
               
             case 'completed':
-              handleSyncCompletion(newJob.store_id, newJob);
+              console.log('🎉 [STATUS-UPDATE] Triggering completion handler for store:', newJobStoreId);
+              console.log('🎉 [COMPLETION-TRIGGER] About to call handleSyncCompletion...');
+              handleSyncCompletion(newJobStoreId, newJob);
               break;
               
             case 'failed':
-              handleSyncFailure(newJob.store_id, newJob);
+              console.log('❌ [STATUS-UPDATE] Triggering failure handler for store:', newJobStoreId);
+              handleSyncFailure(newJobStoreId, newJob);
               break;
+              
+            default:
+              console.log(`ℹ️ [STATUS-UPDATE] Unhandled status: ${newJobStatus}`);
           }
+        } else {
+          console.warn('⚠️ [SYNC-QUEUE-UPDATE] Missing newJob or store_id:', { 
+            hasNewJob: !!newJob, 
+            storeId: newJobStoreId,
+            fullPayload: payload 
+          });
         }
       };
       
       const subscription = supabase
       .channel(`inbox-emails-${userProfile.business_id}`)
       
-      // 📋 [NEW] Subscribe to sync_queue changes first
+      // NOTE: Store updates are handled by handleSyncCompletion via sync_queue subscription
+      
+      // 📋 [ENHANCED] Subscribe to sync_queue changes with enhanced debugging
       .on(
         'postgres_changes',
         {
@@ -1820,7 +2305,22 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           table: 'sync_queue',
           filter: `business_id=eq.${userProfile.business_id}`
         },
-        handleSyncQueueUpdate
+        (payload) => {
+          console.log(`🔄 [SUBSCRIPTION] sync_queue event received for business ${userProfile.business_id}:`, payload.eventType);
+          console.log(`🔄 [SUBSCRIPTION] Full event details:`, {
+            table: payload.table,
+            schema: payload.schema,
+            eventType: payload.eventType,
+            timestamp: new Date().toISOString(),
+            hasNew: !!payload.new,
+            hasOld: !!payload.old,
+            newJobId: payload.new?.id,
+            newStatus: payload.new?.status,
+            newStoreId: payload.new?.store_id,
+            newBusinessId: payload.new?.business_id
+          });
+          handleSyncQueueUpdate(payload);
+        }
       )
       .on(
         'postgres_changes',
@@ -1875,11 +2375,27 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   new Date(b.date).getTime() - new Date(a.date).getTime()
                 );
                 
-                // Show toast notification
-                try {
-                  toast.success(`📧 New email from ${newEmail.from}`);
-                } catch (toastError) {
-                  console.warn('Toast notification failed:', toastError);
+                // 🔔 SMART NOTIFICATION: Only show toast for webhook emails, not sync emails
+                // Check if this email came from a webhook (real-time) vs sync operation
+                const isFromWebhook = newEmail.source === 'webhook' || 
+                                     (!newEmail.source && newEmail.graph_id); // Webhook emails have graph_id
+                const isRecentEmail = new Date(newEmail.date).getTime() > (Date.now() - 5 * 60 * 1000); // Last 5 minutes
+                
+                if (isFromWebhook && isRecentEmail) {
+                  try {
+                    console.log('🔔 Showing webhook email notification for:', newEmail.from);
+                    toast.success(`📧 New email from ${newEmail.from}`);
+                  } catch (toastError) {
+                    console.warn('Toast notification failed:', toastError);
+                  }
+                } else {
+                  console.log('🔇 Skipping notification for sync email:', {
+                    isFromWebhook,
+                    isRecentEmail,
+                    source: newEmail.source,
+                    hasGraphId: !!newEmail.graph_id,
+                    emailDate: newEmail.date
+                  });
                 }
                 
                 return updated;
@@ -1893,18 +2409,22 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           }
         }
       )
+      // =========================================================================
+      // == START: ADDED REAL-TIME UPDATE LISTENER                              ==
+      // =========================================================================
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
-          table: 'emails'
+          table: 'emails',
+          filter: `business_id=eq.${userProfile.business_id}`
         },
         async (payload) => {
           console.log('InboxContext: Received email update:', payload);
           const updatedEmail = payload.new;
           
-          // SECURITY: Get stores for user's business only
+          // SECURITY: Re-fetch stores for user's business only to ensure context is current
           const { data: userProfile } = await supabase
             .from('user_profiles')
             .select('business_id')
@@ -1940,16 +2460,25 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           ));
         }
       )
-      .subscribe((status) => {
-        console.log('🔄 InboxContext: Real-time subscription status:', status);
+      // =========================================================================
+      // == END: ADDED REAL-TIME UPDATE LISTENER                                ==
+      // =========================================================================
+      .subscribe((status, err) => {
+        console.log('🔌 [SUBSCRIPTION-STATUS] Real-time subscription status changed:', {
+          status,
+          error: err,
+          channel: `inbox-emails-${userProfile.business_id}`,
+          timestamp: new Date().toISOString()
+        });
+        
         if (status === 'SUBSCRIBED') {
-          console.log('✅ Real-time subscription is active and ready');
+          console.log('✅ [SUBSCRIPTION-READY] Real-time subscription active and ready for sync_queue updates');
         } else if (status === 'CHANNEL_ERROR') {
-          console.error('❌ Real-time subscription error');
+          console.error('❌ [SUBSCRIPTION-ERROR] Real-time subscription failed:', err);
         } else if (status === 'TIMED_OUT') {
-          console.warn('⏰ Real-time subscription timed out');
+          console.warn('⏰ [SUBSCRIPTION-TIMEOUT] Real-time subscription timed out');
         } else if (status === 'CLOSED') {
-          console.log('🔒 Real-time subscription closed');
+          console.log('🔒 [SUBSCRIPTION-CLOSED] Real-time subscription closed');
         }
       });
 
@@ -1986,6 +2515,201 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [user?.id]); // Only depend on user.id to prevent unnecessary re-subscriptions
 
+  /**
+   * 🧪 TEST: Real-time subscription functionality
+   */
+  const testRealtimeSubscription = async () => {
+    if (!user) {
+      toast.error('Please log in to test real-time subscription');
+      return;
+    }
+
+    try {
+      console.log('🧪 [TEST] Starting real-time subscription test...');
+
+      // Get user's business_id for the test
+      const { data: userProfile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .single();
+
+      if (profileError || !userProfile?.business_id) {
+        throw new Error('Business information not found for testing');
+      }
+
+      console.log('🧪 [TEST] User business_id for test:', userProfile.business_id);
+
+      // Test 1: Create a test sync_queue record with correct business_id
+      console.log('🧪 [TEST-1] Creating test sync_queue record WITH business_id filter match...');
+      
+      // Generate proper UUID for test
+      const testUuid1 = crypto.randomUUID();
+      
+      const testRecord1 = {
+        id: testUuid1,
+        store_id: 'test-store-1',
+        business_id: userProfile.business_id, // Matches filter
+        sync_type: 'manual', // Valid sync_type (instead of 'test')
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        metadata: { test: 'realtime-subscription-test-1' }
+      };
+
+      const { error: insertError1 } = await supabase
+        .from('sync_queue')
+        .insert(testRecord1);
+
+      if (insertError1) {
+        console.error('🧪 [TEST-1] Failed to insert test record:', insertError1);
+        console.error('🧪 [TEST-1] Full error details:', {
+          message: insertError1.message,
+          details: insertError1.details,
+          hint: insertError1.hint,
+          code: insertError1.code
+        });
+        
+        console.log('🧪 [TEST-1] This suggests RLS policies or permissions are blocking direct sync_queue access');
+        console.log('🧪 [TEST-1] Let me try an alternative approach...');
+        
+        // Alternative Test: Check if subscription is connected by testing with existing sync
+        console.log('🧪 [ALT-TEST] Testing subscription connection status...');
+        
+        // Get current subscription status
+        const subscriptionStatus = supabase.getChannels();
+        console.log('🧪 [ALT-TEST] Current Supabase channels:', subscriptionStatus);
+        
+        // Test if we can read from sync_queue at least
+        console.log('🧪 [ALT-TEST] Testing sync_queue read access...');
+        const { data: existingJobs, error: readError } = await supabase
+          .from('sync_queue')
+          .select('id, status, business_id')
+          .eq('business_id', userProfile.business_id)
+          .limit(5);
+          
+        if (readError) {
+          console.error('🧪 [ALT-TEST] Cannot read sync_queue either:', readError);
+          throw new Error(`sync_queue access blocked: ${readError.message}`);
+        } else {
+          console.log('🧪 [ALT-TEST] sync_queue READ access works:', existingJobs);
+          console.log('🧪 [ALT-TEST] Found', existingJobs?.length || 0, 'existing jobs for this business');
+        }
+        
+        throw new Error(`Cannot insert test records into sync_queue. RLS Policy issue: ${insertError1.message}`);
+      }
+
+      console.log('🧪 [TEST-1] Test record inserted successfully:', testRecord1.id);
+
+      // Wait 2 seconds for real-time event
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Test 2: Update the test record to 'completed' status
+      console.log('🧪 [TEST-2] Updating test record to completed status...');
+      
+      const { error: updateError1 } = await supabase
+        .from('sync_queue')
+        .update({ 
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          metadata: { test: 'realtime-subscription-test-completed' }
+        })
+        .eq('id', testRecord1.id);
+
+      if (updateError1) {
+        console.error('🧪 [TEST-2] Failed to update test record:', updateError1);
+        throw updateError1;
+      }
+
+      console.log('🧪 [TEST-2] Test record updated to completed');
+
+      // Wait 2 seconds for real-time event
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Test 3: Create a test record with DIFFERENT business_id (should NOT trigger subscription)
+      console.log('🧪 [TEST-3] Creating test record with DIFFERENT business_id (should NOT trigger)...');
+      
+      // Generate proper UUID for test 2
+      const testUuid2 = crypto.randomUUID();
+      
+      const testRecord2 = {
+        id: testUuid2,
+        store_id: 'test-store-2',
+        business_id: 'different-business-id', // Does NOT match filter
+        sync_type: 'manual', // Valid sync_type
+        status: 'completed',
+        created_at: new Date().toISOString(),
+        metadata: { test: 'realtime-subscription-test-no-match' }
+      };
+
+      const { error: insertError2 } = await supabase
+        .from('sync_queue')
+        .insert(testRecord2);
+
+      if (insertError2) {
+        console.error('🧪 [TEST-3] Failed to insert test record 2:', insertError2);
+        throw insertError2;
+      }
+
+      console.log('🧪 [TEST-3] Test record 2 inserted (should NOT trigger subscription)');
+
+      // Wait 2 seconds
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Cleanup: Remove test records
+      console.log('🧪 [CLEANUP] Removing test records...');
+      
+      await supabase
+        .from('sync_queue')
+        .delete()
+        .in('id', [testUuid1, testUuid2]);
+
+      console.log('🧪 [CLEANUP] Test records removed');
+
+      console.log('🧪 [TEST] Real-time subscription test completed!');
+      console.log('🧪 [TEST] Check the logs above for subscription events:');
+      console.log('🧪 [TEST] - Look for "🔄 [SUBSCRIPTION]" logs');
+      console.log('🧪 [TEST] - Look for "🔄 [SYNC-QUEUE-UPDATE]" logs');
+      console.log('🧪 [TEST] - Test 1 & 2 should trigger events');
+      console.log('🧪 [TEST] - Test 3 should NOT trigger events');
+
+      toast.success('Real-time subscription test completed! Check console for results.', { 
+        duration: 5000 
+      });
+
+    } catch (error) {
+      console.error('🧪 [TEST] Real-time subscription test failed:', error);
+      
+      // If direct sync_queue access fails, try alternative test with real sync
+      console.log('🧪 [ALT-TEST-2] Direct sync_queue access failed, trying real sync test...');
+      
+      try {
+        // Check if we have any connected stores to test with
+        if (stores.length === 0) {
+          console.log('🧪 [ALT-TEST-2] No connected stores available for real sync test');
+          toast.error('Real-time test failed: sync_queue access blocked and no stores to test with');
+          return;
+        }
+        
+        const testStore = stores[0];
+        console.log('🧪 [ALT-TEST-2] Testing with real store:', testStore.id, testStore.name);
+        console.log('🧪 [ALT-TEST-2] This will create a real sync job and test if subscription triggers');
+        console.log('🧪 [ALT-TEST-2] Watch for real-time subscription events...');
+        
+        // Trigger a real sync to test if subscription works
+        await createSyncJob(testStore.id, 'manual'); // Use 'manual' instead of 'test'
+        
+        console.log('🧪 [ALT-TEST-2] Real sync triggered - watch for subscription events above');
+        toast.success('Real sync test triggered! Watch console for real-time subscription events.', { 
+          duration: 5000 
+        });
+        
+      } catch (altError) {
+        console.error('🧪 [ALT-TEST-2] Alternative test also failed:', altError);
+        toast.error(`Test failed: ${(error as any)?.message || 'Unknown error'}`);
+      }
+    }
+  };
+
   const value = {
     emails,
     stores,
@@ -1998,9 +2722,12 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     disconnectStore,
     syncEmails,
     refreshEmails,
+    refreshStoreStatus,
+    retryFailedSync,
     loading,
     error,
-    pendingStore
+    pendingStore,
+          testRealtimeSubscription: () => testRealtimeSubscription()
   };
 
   return <InboxContext.Provider value={value}>{children}</InboxContext.Provider>;

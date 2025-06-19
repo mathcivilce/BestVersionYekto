@@ -618,9 +618,10 @@ serve(async (req) => {
               has_attachments: attachmentCount > 0,                   // Smart Reference Architecture: metadata flag
               attachment_reference_count: attachmentCount,            // Smart Reference Architecture: count for UI
               processed_by_custom_threading: true,                    // Mark as processed by universal threading
-              // 🎯 SMART DIRECTION DETECTION: Determine if email is inbound or outbound
-              direction: (message.from?.emailAddress?.address || '').toLowerCase() === store.email.toLowerCase() ? 'outbound' : 'inbound',
-              recipient: toEmails                                      // Store the actual recipients (our store email)
+                          // 🎯 SMART DIRECTION DETECTION: Determine if email is inbound or outbound
+            direction: (message.from?.emailAddress?.address || '').toLowerCase() === store.email.toLowerCase() ? 'outbound' : 'inbound',
+            recipient: toEmails,                                     // Store the actual recipients (our store email)
+            source: 'webhook'                                        // 🔔 Mark as webhook email for smart notifications
             }, {
               onConflict: 'graph_id,user_id',                         // Prevent duplicates by Graph ID + User
               ignoreDuplicates: false                                  // Update if exists

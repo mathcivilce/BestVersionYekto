@@ -6,11 +6,14 @@ import toast from 'react-hot-toast';
 import ShopifyConnectModal from '../components/integrations/ShopifyConnectModal';
 import { useInbox } from '../contexts/InboxContext';
 
+// Initialize Supabase client for database operations
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
+// TypeScript interface defining the structure of a Shopify store record
+// This matches the database schema for shopify_stores table with nested store data
 interface ShopifyStore {
   id: string;
   store: {
@@ -23,19 +26,54 @@ interface ShopifyStore {
   created_at: string;
 }
 
+/**
+ * Integrations Page Component
+ * 
+ * This component manages the integrations page where users can:
+ * 1. View available integrations (currently only Shopify)
+ * 2. Connect new Shopify stores via a modal
+ * 3. View and manage connected stores in a table
+ * 4. Disconnect existing stores
+ * 
+ * Key functionality:
+ * - Fetches connected stores from database on mount
+ * - Displays integration cards with connect buttons
+ * - Shows connected stores table with status and actions
+ * - Handles store disconnection with optimistic UI updates
+ */
 const Integrations: React.FC = () => {
+  // Modal state for controlling the Shopify connection modal visibility
   const [isModalOpen, setIsModalOpen] = useState(false);
+  
+  // Loading state for the initial stores fetch operation
   const [loading, setLoading] = useState(true);
+  
+  // Array of connected Shopify stores fetched from database
   const [stores, setStores] = useState<ShopifyStore[]>([]);
+  
+  // Set to track which stores are currently being disconnected (for loading states)
   const [disconnectingStores, setDisconnectingStores] = useState<Set<string>>(new Set());
-  const { stores: inboxStores, testRealtimeSubscription } = useInbox();
+  
+  // Get inbox stores from context (currently not actively used but available)
+  const { stores: inboxStores } = useInbox();
 
+  /**
+   * Fetches connected Shopify stores from the database
+   * 
+   * This function:
+   * 1. Authenticates the current user
+   * 2. Queries shopify_stores table with nested store data
+   * 3. Updates the stores state with fetched data
+   * 4. Handles and logs any errors that occur
+   * 
+   * The query joins shopify_stores with the stores table to get full store details
+   */
   const fetchStores = async () => {
     try {
       console.log('Integrations: Starting fetchStores');
       setLoading(true);
       
-      // Check authentication first
+      // Check authentication first - ensures user is logged in before querying
       const { data: authUser, error: authError } = await supabase.auth.getUser();
       console.log('Integrations: Auth check result:', {
         hasUser: !!authUser.user,
@@ -45,6 +83,8 @@ const Integrations: React.FC = () => {
       });
 
       console.log('Integrations: About to query shopify_stores table');
+      
+      // Query shopify_stores with nested store data using foreign key relationship
       const { data, error } = await supabase
         .from('shopify_stores')
         .select(`
@@ -93,11 +133,24 @@ const Integrations: React.FC = () => {
     }
   };
 
+  /**
+   * Disconnects a Shopify store by setting its connected status to false
+   * 
+   * This function:
+   * 1. Adds the store to disconnecting set (for loading UI)
+   * 2. Updates the store's connected status in database
+   * 3. Updates local state with optimistic update
+   * 4. Shows success/error messages
+   * 5. Removes store from disconnecting set when done
+   * 
+   * @param storeId - The ID of the store to disconnect
+   */
   const disconnectStore = async (storeId: string) => {
     try {
-      // Add store to disconnecting set
+      // Add store to disconnecting set for loading state UI
       setDisconnectingStores(prev => new Set(prev).add(storeId));
       
+      // Update the stores table to mark store as disconnected
       const { error } = await supabase
         .from('stores')
         .update({ connected: false })
@@ -105,6 +158,7 @@ const Integrations: React.FC = () => {
 
       if (error) throw error;
 
+      // Optimistically update local state to reflect disconnection
       setStores(stores.map(store => 
         store.id === storeId 
           ? { ...store, store: { ...store.store, connected: false }} 
@@ -116,7 +170,7 @@ const Integrations: React.FC = () => {
       console.error('Error disconnecting store:', error);
       toast.error('Failed to disconnect store');
     } finally {
-      // Remove store from disconnecting set
+      // Remove store from disconnecting set regardless of success/failure
       setDisconnectingStores(prev => {
         const newSet = new Set(prev);
         newSet.delete(storeId);
@@ -125,10 +179,13 @@ const Integrations: React.FC = () => {
     }
   };
 
+  // Fetch stores when component mounts
   useEffect(() => {
     fetchStores();
   }, []);
 
+  // Static configuration for available integrations
+  // Currently only Shopify is supported, but this structure allows for easy expansion
   const integrations = [
     {
       id: 'shopify',
@@ -143,26 +200,15 @@ const Integrations: React.FC = () => {
   return (
     <>
       <div className="space-y-6">
+        {/* Page Header - Simple title without action buttons */}
+        {/* Note: Previously had "Connect Shopify Store" and "Test Real-time" buttons here, 
+             but they were removed to avoid duplication with the integration card's Connect button */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900">Integrations</h1>
-          <div className="flex gap-3">
-                                      <button
-               onClick={() => setShowShopifyModal(true)}
-               className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-             >
-               + Connect Shopify Store
-             </button>
-             
-             {/* 🧪 Real-time Subscription Test Button */}
-             <button
-               onClick={testRealtimeSubscription}
-               className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-             >
-               🧪 Test Real-time
-             </button>
-          </div>
         </div>
 
+        {/* Integration Cards Grid - Shows available integrations */}
+        {/* Each card has its own Connect button that opens the connection modal */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {integrations.map((integration) => {
             return (
@@ -170,6 +216,7 @@ const Integrations: React.FC = () => {
                 key={integration.id}
                 className="bg-white rounded-lg shadow-sm border border-gray-200 p-6"
               >
+                {/* Integration header with icon and description */}
                 <div className="flex items-start">
                   <img 
                     src={integration.icon} 
@@ -186,6 +233,8 @@ const Integrations: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Connect button - Opens the ShopifyConnectModal */}
+                {/* This is the primary way users should connect new stores */}
                 <div className="mt-6">
                   <button
                     type="button"
@@ -201,19 +250,21 @@ const Integrations: React.FC = () => {
           })}
         </div>
 
-        {/* Connected Stores Table */}
+        {/* Connected Stores Table - Shows all connected stores with management options */}
         <div className="bg-white shadow-sm rounded-lg border border-gray-200">
           <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
             <h3 className="text-lg font-medium text-gray-900">Connected Stores</h3>
           </div>
           
           <div className="overflow-x-auto">
+            {/* Loading state - Shows spinner while fetching stores */}
             {loading ? (
               <div className="flex items-center justify-center p-8">
                 <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
                 <span className="ml-2 text-gray-600">Loading stores...</span>
               </div>
             ) : stores.length === 0 ? (
+              /* Empty state - Shows when no stores are connected */
               <div className="text-center py-8">
                 <XCircle className="mx-auto h-12 w-12 text-gray-400" />
                 <h3 className="mt-2 text-sm font-medium text-gray-900">No stores connected</h3>
@@ -222,6 +273,7 @@ const Integrations: React.FC = () => {
                 </p>
               </div>
             ) : (
+              /* Stores table - Shows connected stores with actions */
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
@@ -245,12 +297,17 @@ const Integrations: React.FC = () => {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {stores.map((store) => (
                     <tr key={store.id}>
+                      {/* Store name from nested store object */}
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                         {store.store.name}
                       </td>
+                      
+                      {/* Shopify domain (e.g., mystore.myshopify.com) */}
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {store.shop_domain}
                       </td>
+                      
+                      {/* Connection status badge - Green for connected, Red for disconnected */}
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                           store.store.connected
@@ -260,9 +317,13 @@ const Integrations: React.FC = () => {
                           {store.store.connected ? '🟢 Connected' : '🔴 Disconnected'}
                         </span>
                       </td>
+                      
+                      {/* Last sync time or creation time if never synced */}
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {format(new Date(store.store.last_synced || store.store.created_at), 'PPp')}
                       </td>
+                      
+                      {/* Disconnect action button - Shows loading state during disconnection */}
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         <button
                           onClick={() => disconnectStore(store.id)}
@@ -288,6 +349,9 @@ const Integrations: React.FC = () => {
         </div>
       </div>
 
+      {/* Shopify Connection Modal - Controlled by isModalOpen state */}
+      {/* Opens when user clicks Connect button in integration card */}
+      {/* Refreshes stores list after successful connection */}
       <ShopifyConnectModal
         isOpen={isModalOpen}
         onClose={() => {

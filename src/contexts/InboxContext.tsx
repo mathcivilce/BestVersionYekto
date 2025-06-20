@@ -1984,7 +1984,6 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     
     try {
       console.log('InboxContext: Manual email refresh triggered');
-      setLoading(true);
       
       // SECURITY FIX: Get user's business_id first
       const { data: userProfile, error: profileError } = await supabase
@@ -2039,13 +2038,9 @@ export const InboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       setEmails(emailsWithStore);
       console.log('InboxContext: Manual refresh completed -', emailsWithStore.length, 'emails loaded');
-      toast.success('Emails refreshed successfully');
     } catch (error) {
       console.error('InboxContext: Manual refresh failed:', error);
-      toast.error('Failed to refresh emails');
       throw error;
-    } finally {
-      setLoading(false);
     }
   };
 

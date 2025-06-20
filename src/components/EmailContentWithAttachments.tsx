@@ -411,3 +411,5 @@ const sanitizeHtml = (html: string): string => {
 };
 
 export default EmailContentWithAttachments; 
+
+/* Author: Matheus Rodrigues Oliveira */

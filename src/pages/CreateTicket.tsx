@@ -25,7 +25,7 @@ import TemplateSelector from '../components/email/TemplateSelector';
 const CreateTicket: React.FC = () => {
   const { storeId } = useParams<{ storeId: string }>();
   const navigate = useNavigate();
-  const { stores, loading } = useInbox();
+  const { stores, loading, refreshEmails } = useInbox();
   const { user } = useAuth();
   
   const [store, setStore] = useState<any>(null);

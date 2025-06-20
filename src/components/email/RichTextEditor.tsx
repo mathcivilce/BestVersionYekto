@@ -75,6 +75,21 @@ interface RichTextEditorProps {
   showStorageInfo?: boolean;
 }
 
+/**
+ * 🔧 INLINE IMAGE FIXES IMPLEMENTED:
+ * 
+ * Fix 1: Prevent inline images from disappearing from editor
+ * - Problem: Race condition between Quill editor content and React state
+ * - Solution: Get fresh content from Quill editor after image insertion
+ * - Location: Line ~235 in handleFileUpload function
+ * 
+ * Fix 2: Hide inline images from attachments list  
+ * - Problem: Inline images appeared in both editor AND attachments list
+ * - Solution: Filter attachments display to exclude isInline=true items
+ * - Location: Line ~515 in attachments list rendering
+ * 
+ * Result: Inline images now stay in editor only, regular attachments work normally
+ */
 const RichTextEditor: React.FC<RichTextEditorProps> = ({
   value,
   onChange,
@@ -95,6 +110,9 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
   }, [value]);
 
   // Calculate total size of attachments
+  // 📝 NOTE: This includes BOTH inline images AND regular attachments
+  // because both count toward email size limits, even though inline images
+  // are hidden from the attachments list display
   const totalAttachmentSize = useMemo(() => {
     return attachments.reduce((total, att) => total + att.size, 0);
   }, [attachments]);
@@ -228,7 +246,14 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
       const allAttachments = [...attachments, ...newAttachments];
       setAttachments(allAttachments);
-      onChange(content, allAttachments);
+      
+      // 🔧 FIX 1: INLINE IMAGE DISAPPEARING ISSUE
+      // Problem: Using stale 'content' state instead of current Quill editor content
+      // Solution: Get fresh content from Quill editor after image insertion
+      // This prevents the race condition where onChange() is called with old content
+      // causing the parent component to reset the editor and remove the inline image
+      const currentContent = quillRef.current?.getEditor()?.root.innerHTML || content;
+      onChange(currentContent, allAttachments);
 
       if (newAttachments.length > 0) {
         toast.success(`${newAttachments.length} file(s) uploaded successfully`);
@@ -267,7 +292,9 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
   }), []);
 
-  // Handle content change
+  // Handle content change from Quill editor
+  // This function is called when user types or makes changes in the editor
+  // It's separate from the file upload content sync fix above
   const handleContentChange = useCallback((newContent: string) => {
     setContent(newContent);
     onChange(newContent, attachments);
@@ -499,18 +526,25 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
       )}
 
       {/* Enhanced Attachments List */}
-      {attachments.length > 0 && (
+      {/* 🔧 FIX 2: HIDE INLINE IMAGES FROM ATTACHMENTS LIST
+          Problem: Inline images were appearing both in editor AND attachments list
+          Solution: Filter out inline images (isInline=true) from attachments display
+          This ensures inline images only appear in the rich text editor where they belong */}
+      {attachments.filter(att => !att.isInline).length > 0 && (
         <div className="mt-3 space-y-2">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium text-gray-700">
-              Attachments ({attachments.length})
+              {/* Only count non-inline attachments for display */}
+              Attachments ({attachments.filter(att => !att.isInline).length})
             </h4>
             <div className="text-xs text-gray-500">
-              Total: {formatFileSize(totalAttachmentSize)}
+              {/* Calculate total size of non-inline attachments only */}
+              Total: {formatFileSize(attachments.filter(att => !att.isInline).reduce((total, att) => total + att.size, 0))}
             </div>
           </div>
           
-          {attachments.map((attachment) => (
+          {/* Only render non-inline attachments in the list */}
+          {attachments.filter(att => !att.isInline).map((attachment) => (
             <div
               key={attachment.id}
               className="flex items-center justify-between bg-gray-50 p-3 rounded border"
@@ -568,3 +602,5 @@ const RichTextEditor: React.FC<RichTextEditorProps> = ({
 };
 
 export default RichTextEditor; 
+
+/* Author: Matheus Rodrigues Oliveira */

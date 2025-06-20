@@ -774,3 +774,5 @@ Date: ${new Date().toUTCString()}
     );
   }
 });
+
+/* Author: Matheus Rodrigues Oliveira */
